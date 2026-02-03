@@ -237,3 +237,4 @@ def search(payload: SearchRequest) -> SearchResponse:
         raise
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+# Resolver
