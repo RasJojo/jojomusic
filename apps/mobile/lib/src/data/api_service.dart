@@ -341,3 +341,4 @@ class _SearchCacheEntry {
   final SearchResult result;
   final DateTime expiresAt;
 }
+// API
