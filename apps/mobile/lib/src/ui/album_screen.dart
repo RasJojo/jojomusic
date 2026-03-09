@@ -137,3 +137,4 @@ String _artistKeyFromName(String value) {
       .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
       .replaceAll(RegExp(r'^-+|-+$'), '');
 }
+// Albums
