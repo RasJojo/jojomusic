@@ -288,3 +288,4 @@ class _SimilarArtistsSection extends StatelessWidget {
     );
   }
 }
+// Artists
