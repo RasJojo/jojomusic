@@ -879,3 +879,4 @@ String _formatDuration(Duration value) {
   }
   return '${value.inMinutes}:$seconds';
 }
+// Mini player
