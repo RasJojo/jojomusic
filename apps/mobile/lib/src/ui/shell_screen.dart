@@ -1936,3 +1936,4 @@ Color _colorFromHex(String value) {
   buffer.write(value.replaceFirst('#', ''));
   return Color(int.parse(buffer.toString(), radix: 16));
 }
+// Swipe
