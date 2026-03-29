@@ -54,7 +54,7 @@ class ShellTabIndexNotifier extends Notifier<int> {
   int build() => 0;
 
   void setIndex(int value) {
-    state = value;
+    state = value.clamp(0, 2);
   }
 }
 

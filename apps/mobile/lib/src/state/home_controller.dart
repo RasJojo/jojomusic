@@ -6,15 +6,22 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/app_models.dart';
 import 'providers.dart';
+import 'session_controller.dart';
 
 final homeControllerProvider = AsyncNotifierProvider<HomeController, HomeData>(
   HomeController.new,
 );
 
 const _homeFetchTimeout = Duration(seconds: 8);
-const _homeCacheKey = 'jojomusic.home.cache';
+const _homeCacheKeyPrefix = 'jojomusic.home.cache';
 
 class HomeController extends AsyncNotifier<HomeData> {
+  String get _homeCacheKey {
+    final userId =
+        ref.read(sessionControllerProvider).asData?.value?.user.id ?? 'anon';
+    return '$_homeCacheKeyPrefix.$userId';
+  }
+
   @override
   Future<HomeData> build() async {
     final cached = await _restoreCachedHome();

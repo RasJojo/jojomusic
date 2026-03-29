@@ -35,13 +35,19 @@ class OfflinePlaylists extends Table {
 
 @DriftDatabase(tables: [OfflineTracks, OfflinePlaylists])
 class AppDatabase extends _$AppDatabase {
-  AppDatabase()
-    : super(
-        driftDatabase(
-          name: 'jojomusic.sqlite',
-          native: const DriftNativeOptions(),
-        ),
-      );
+  AppDatabase({QueryExecutor? executor})
+    : super(executor ?? _openConnection());
+
+  static QueryExecutor _openConnection() {
+    return driftDatabase(
+      name: 'jojomusic.sqlite',
+      web: DriftWebOptions(
+        sqlite3Wasm: Uri.parse('sqlite3.wasm'),
+        driftWorker: Uri.parse('drift_worker.js'),
+      ),
+      native: const DriftNativeOptions(),
+    );
+  }
 
   @override
   int get schemaVersion => 2;

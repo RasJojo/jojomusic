@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 from uuid import uuid4
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy import delete, desc, select
 from sqlalchemy.orm import Session, selectinload
@@ -26,7 +26,11 @@ from app.metadata import (
 )
 from app.models import PlaybackEvent, Playlist, PlaylistTrack, SavedTrack, User, utcnow
 from app.models import SavedPodcastEpisode, SavedPodcastShow, SpotifyAccountLink
-from app.recommendations import build_generated_playlists, build_recommendations
+from app.recommendations import (
+    build_generated_playlists,
+    build_recommendations,
+    build_similar_tracks,
+)
 from app.schemas import (
     AlbumPayload,
     AlbumDetailsResponse,
@@ -49,6 +53,7 @@ from app.schemas import (
     ResolveTrackRequest,
     ResolvedStream,
     SearchResponse,
+    SimilarTracksRequest,
     SpotifyConnectResponse,
     SpotifyIntegrationStatus,
     TrackPayload,
@@ -67,6 +72,44 @@ musicbrainz_provider = MusicBrainzProvider()
 spotify_provider = SpotifyProvider()
 browse_artwork_cache: dict[str, str | None] = {}
 resolved_stream_cache: dict[str, tuple[datetime, ResolvedStream]] = {}
+home_response_cache: dict[str, tuple[datetime, HomeResponse]] = {}
+_cors_origin_regex = re.compile(
+    r"https://.*\.vercel\.app|http://localhost:\d+|http://127\.0\.0\.1:\d+"
+)
+_HOME_CACHE_TTL = timedelta(seconds=90)
+
+
+def _is_allowed_cors_origin(origin: str | None) -> bool:
+    return bool(
+        origin
+        and (origin in settings.cors_origins or _cors_origin_regex.fullmatch(origin))
+    )
+
+
+def _cors_headers(request: Request) -> dict[str, str]:
+    origin = request.headers.get("origin")
+    if not _is_allowed_cors_origin(origin):
+        return {}
+    requested_headers = request.headers.get("access-control-request-headers")
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+        "Access-Control-Allow-Headers": requested_headers or "*",
+        "Vary": "Origin",
+    }
+
+
+@app.middleware("http")
+async def cors_middleware(request: Request, call_next):
+    headers = _cors_headers(request)
+    if request.method == "OPTIONS" and headers:
+        return Response(status_code=204, headers=headers)
+
+    response = await call_next(request)
+    for key, value in headers.items():
+        response.headers.setdefault(key, value)
+    return response
 
 BROWSE_CATEGORIES = [
     BrowseCategoryPayload(
@@ -266,7 +309,20 @@ async def _hydrate_track_visuals(
 
 def _resolved_stream_cache_key(payload: ResolveTrackRequest, query: str) -> str:
     if payload.track is not None:
-        return payload.track.track_key
+        track = payload.track
+        if track.external_id:
+            return f"track:external:{track.external_id}"
+        identity = [
+            track.provider or "",
+            track.artist or "",
+            track.title or "",
+            track.album or "",
+            track.track_key or "",
+        ]
+        normalized = "||".join(
+            re.sub(r"\s+", " ", value.strip().lower()) for value in identity
+        )
+        return "track:" + normalized
     return "query:" + re.sub(r"\s+", " ", query.strip().lower())
 
 
@@ -395,6 +451,35 @@ async def _safe_async(label: str, awaitable, default):
     except Exception:
         logger.exception("%s failed", label)
         return default
+
+
+async def _safe_async_timed(label: str, awaitable, default, *, timeout: float | None = None):
+    try:
+        if timeout is None:
+            return await awaitable
+        return await asyncio.wait_for(awaitable, timeout=timeout)
+    except Exception:
+        logger.exception("%s failed", label)
+        return default
+
+
+def _get_cached_home(user_id: str) -> HomeResponse | None:
+    cached = home_response_cache.get(user_id)
+    if cached is None:
+        return None
+    cached_at, response = cached
+    if utcnow() - cached_at > _HOME_CACHE_TTL:
+        home_response_cache.pop(user_id, None)
+        return None
+    return response
+
+
+def _store_cached_home(user_id: str, response: HomeResponse) -> None:
+    home_response_cache[user_id] = (utcnow(), response)
+
+
+def _invalidate_home_cache(user_id: str) -> None:
+    home_response_cache.pop(user_id, None)
 
 
 def _spotify_status_payload(link: SpotifyAccountLink | None, shows: list[SavedPodcastShow]) -> SpotifyIntegrationStatus:
@@ -552,6 +637,7 @@ def _import_spotify_bundle(
     refresh_token: str | None,
     token_expires_at: datetime | None,
 ) -> None:
+    _invalidate_home_cache(user.id)
     link.spotify_user_id = bundle.profile["id"]
     link.display_name = bundle.profile.get("display_name")
     link.email = bundle.profile.get("email")
@@ -1077,18 +1163,43 @@ async def resolve_track(payload: ResolveTrackRequest) -> ResolvedStream:
     if cached is not None and cached[0] > utcnow():
         return cached[1]
 
-    async with httpx.AsyncClient(timeout=settings.resolver_timeout_seconds) as client:
-        response = await client.post(
-            f"{settings.resolver_api_url}/api/v1/resolve",
-            json={"query": query},
-        )
-        response.raise_for_status()
+    try:
+        async with httpx.AsyncClient(timeout=settings.resolver_timeout_seconds) as client:
+            response = await client.post(
+                f"{settings.resolver_api_url}/api/v1/resolve",
+                json={"query": query},
+            )
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = "Resolver request failed"
+        try:
+            detail = exc.response.json().get("detail", detail)
+        except Exception:
+            pass
+        raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
     resolved = ResolvedStream.model_validate(response.json())
     resolved_stream_cache[cache_key] = (
         utcnow() + timedelta(minutes=18),
         resolved,
     )
     return resolved
+
+
+@app.post("/api/v1/tracks/similar", response_model=list[TrackPayload])
+async def similar_tracks(payload: SimilarTracksRequest) -> list[TrackPayload]:
+    tracks = await build_similar_tracks(
+        seed_track=payload.track,
+        provider=metadata_provider,
+        lastfm_provider=lastfm_provider,
+        exclude_keys=set(payload.exclude_track_keys),
+        limit=max(1, min(payload.limit, 24)),
+    )
+    return await _hydrate_track_visuals(tracks, thumbnail_limit=6)
 
 
 @app.get("/api/v1/me/likes", response_model=list[TrackPayload])
@@ -1127,6 +1238,7 @@ def like_track(
     )
     db.add(row)
     db.commit()
+    _invalidate_home_cache(current_user.id)
     return track
 
 
@@ -1146,6 +1258,7 @@ def unlike_track(
         return
     db.delete(row)
     db.commit()
+    _invalidate_home_cache(current_user.id)
 
 
 @app.get("/api/v1/me/history", response_model=list[PlaybackEventOut])
@@ -1180,6 +1293,7 @@ def add_history(
     db.add(event)
     db.commit()
     db.refresh(event)
+    _invalidate_home_cache(current_user.id)
     return PlaybackEventOut.model_validate(event)
 
 
@@ -1320,6 +1434,10 @@ async def home(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> HomeResponse:
+    cached_home = _get_cached_home(current_user.id)
+    if cached_home is not None:
+        return cached_home
+
     liked_rows = db.scalars(
         select(SavedTrack)
         .where(SavedTrack.user_id == current_user.id)
@@ -1339,8 +1457,8 @@ async def home(
         if row.track_key not in deduped_history:
             deduped_history[row.track_key] = TrackPayload.model_validate(row.track_payload)
 
-    recommendations_rows, generated_playlists, browse_categories, featured_podcasts = await asyncio.gather(
-        _safe_async(
+    recommendations_rows, browse_categories, featured_podcasts = await asyncio.gather(
+        _safe_async_timed(
             "home recommendations",
             build_recommendations(
                 db=db,
@@ -1350,41 +1468,47 @@ async def home(
                 limit=16,
             ),
             [],
+            timeout=4.0,
         ),
-        _safe_async(
-            "home generated playlists",
-            build_generated_playlists(
-                db=db,
-                user=current_user,
-                provider=metadata_provider,
-                lastfm_provider=lastfm_provider,
-            ),
-            [],
+        _safe_async_timed("home browse categories", _build_browse_categories(), [], timeout=1.2),
+        _safe_async_timed("home featured podcasts", _build_featured_podcasts(limit=6), [], timeout=1.2),
+    )
+    generated_playlists = await _safe_async_timed(
+        "home generated playlists",
+        build_generated_playlists(
+            db=db,
+            user=current_user,
+            provider=metadata_provider,
+            lastfm_provider=lastfm_provider,
+            recommendations_seed=recommendations_rows,
         ),
-        _safe_async("home browse categories", _build_browse_categories(), []),
-        _safe_async("home featured podcasts", _build_featured_podcasts(limit=6), []),
+        [],
+        timeout=2.5,
     )
     liked_tracks = [TrackPayload.model_validate(row.track_payload) for row in liked_rows]
     recently_played = list(deduped_history.values())[:12]
     recommendations_rows, recently_played, liked_tracks = await asyncio.gather(
-        _safe_async(
+        _safe_async_timed(
             "home recommendation visuals",
-            _hydrate_track_visuals(recommendations_rows, thumbnail_limit=6),
+            _hydrate_track_visuals(recommendations_rows, thumbnail_limit=2),
             recommendations_rows,
+            timeout=1.2,
         ),
-        _safe_async(
+        _safe_async_timed(
             "home history visuals",
-            _hydrate_track_visuals(recently_played, thumbnail_limit=6),
+            _hydrate_track_visuals(recently_played, thumbnail_limit=0),
             recently_played,
+            timeout=0.8,
         ),
-        _safe_async(
+        _safe_async_timed(
             "home likes visuals",
-            _hydrate_track_visuals(liked_tracks, thumbnail_limit=4),
+            _hydrate_track_visuals(liked_tracks, thumbnail_limit=0),
             liked_tracks,
+            timeout=0.8,
         ),
     )
 
-    return HomeResponse(
+    response = HomeResponse(
         recently_played=recently_played,
         liked_tracks=liked_tracks,
         recommendations=recommendations_rows,
@@ -1392,3 +1516,5 @@ async def home(
         browse_categories=browse_categories,
         featured_podcasts=featured_podcasts,
     )
+    _store_cached_home(current_user.id, response)
+    return response

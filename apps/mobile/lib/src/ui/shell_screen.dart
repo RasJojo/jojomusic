@@ -3,12 +3,10 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../models/app_models.dart';
 import '../state/downloads_controller.dart';
 import '../state/home_controller.dart';
-import '../state/integrations_controller.dart';
 import '../state/library_controller.dart';
 import '../state/player_controller.dart';
 import '../state/providers.dart';
@@ -19,10 +17,12 @@ import 'browse_category_screen.dart';
 import 'collection_screen.dart';
 import 'playlist_screen.dart';
 import 'podcast_screen.dart';
+import 'profile_screen.dart';
 import 'theme/jojo_theme.dart';
 import 'widgets/jojo_surfaces.dart';
 import 'widgets/media_artwork.dart';
-import 'widgets/shell_bottom_bar.dart';
+import 'widgets/shell_chrome.dart';
+import 'widgets/track_playlist_picker_sheet.dart';
 
 class ShellScreen extends ConsumerStatefulWidget {
   const ShellScreen({super.key});
@@ -48,7 +48,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final selectedIndex = ref.watch(shellTabIndexProvider);
+    final selectedIndex = ref.watch(shellTabIndexProvider).clamp(0, 2);
     final pages = [
       _HomeTab(
         active: selectedIndex == 0,
@@ -74,16 +74,16 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
         onTrackAction: _showTrackActions,
       ),
       _LibraryTab(active: selectedIndex == 2, onTrackAction: _showTrackActions),
-      _ProfileTab(
-        active: selectedIndex == 3,
-        onLogout: () => ref.read(sessionControllerProvider.notifier).logout(),
-      ),
     ];
 
-    return JojoPageScaffold(
-      bottomNavigationBar: const ShellBottomBar(),
+    return ShellChrome(
+      onProfilePressed: _openProfile,
       child: IndexedStack(index: selectedIndex, children: pages),
     );
+  }
+
+  void _openProfile() {
+    openProfileScreen(context);
   }
 
   Future<void> _runSearch() async {
@@ -182,7 +182,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
         builder: (_) => CollectionScreen(
           title: playlist.title,
           subtitle: playlist.subtitle,
-          artworkUrl: playlist.artworkUrl,
+          artworkUrl: playlist.displayArtworkUrl,
           tracks: playlist.tracks,
           onTrackAction: _showTrackActions,
         ),
@@ -215,11 +215,11 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
     List<Track> queue,
   ) async {
     final library = ref.read(libraryControllerProvider).asData?.value;
-    final playlists = library?.playlists ?? const <Playlist>[];
+    final isLiked = library?.isLiked(track) ?? false;
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (context) {
+      builder: (sheetContext) {
         return SafeArea(
           child: ListView(
             shrinkWrap: true,
@@ -228,35 +228,45 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
                 leading: const Icon(Icons.play_arrow_rounded),
                 title: const Text('Lire maintenant'),
                 onTap: () async {
-                  Navigator.of(context).pop();
+                  Navigator.of(sheetContext).pop();
                   await ref
                       .read(playerControllerProvider)
                       .playTrack(track, queue: queue);
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.favorite_outline_rounded),
-                title: const Text('Ajouter aux favoris'),
+                leading: Icon(
+                  isLiked
+                      ? Icons.favorite_rounded
+                      : Icons.favorite_outline_rounded,
+                  color: isLiked ? const Color(0xFFFF6B8E) : null,
+                ),
+                title: Text(
+                  isLiked ? 'Retirer des favoris' : 'Ajouter aux favoris',
+                ),
                 onTap: () async {
-                  Navigator.of(context).pop();
+                  Navigator.of(sheetContext).pop();
                   await ref
                       .read(libraryControllerProvider.notifier)
                       .toggleLike(track);
                 },
               ),
-              if (playlists.isNotEmpty)
-                ...playlists.map(
-                  (playlist) => ListTile(
-                    leading: const Icon(Icons.playlist_add_rounded),
-                    title: Text('Ajouter à ${playlist.name}'),
-                    onTap: () async {
-                      Navigator.of(context).pop();
-                      await ref
-                          .read(libraryControllerProvider.notifier)
-                          .addToPlaylist(playlistId: playlist.id, track: track);
-                    },
-                  ),
+              ListTile(
+                leading: const Icon(Icons.playlist_add_rounded),
+                title: const Text('Ajouter à une playlist'),
+                subtitle: const Text(
+                  'Choisis une ou plusieurs playlists.',
                 ),
+                onTap: () async {
+                  Navigator.of(sheetContext).pop();
+                  await showTrackPlaylistPickerSheet(
+                    context,
+                    ref,
+                    track: track,
+                    preferDownloaded: true,
+                  );
+                },
+              ),
             ],
           ),
         );
@@ -779,7 +789,15 @@ class _SearchResultsContent extends StatelessWidget {
             artists: result.artists,
             onArtistSelected: onArtistSelected,
           ),
-        if (result.artists.isNotEmpty && result.tracks.isNotEmpty)
+        if (result.artists.isNotEmpty && result.podcasts.isNotEmpty)
+          const SizedBox(height: 18),
+        if (result.podcasts.isNotEmpty)
+          _PodcastResultsSection(
+            podcasts: result.podcasts,
+            onPodcastSelected: onPodcastSelected,
+          ),
+        if ((result.artists.isNotEmpty || result.podcasts.isNotEmpty) &&
+            result.tracks.isNotEmpty)
           const SizedBox(height: 18),
         if (result.tracks.isNotEmpty)
           _TrackSection(
@@ -802,13 +820,6 @@ class _SearchResultsContent extends StatelessWidget {
           _PlaylistResultsSection(
             playlists: playlists,
             onPlaylistSelected: onPlaylistSelected,
-          ),
-        if (playlists.isNotEmpty && result.podcasts.isNotEmpty)
-          const SizedBox(height: 18),
-        if (result.podcasts.isNotEmpty)
-          _PodcastResultsSection(
-            podcasts: result.podcasts,
-            onPodcastSelected: onPodcastSelected,
           ),
       ],
     );
@@ -1088,89 +1099,124 @@ class _LibraryTab extends ConsumerWidget {
           favoritesPlaylist,
           ...data.playlists,
         ].whereType<Playlist>().toList(growable: false);
+        final followedPodcasts = data.followedPodcasts;
 
         return ListView(
           padding: const EdgeInsets.fromLTRB(18, 28, 18, 160),
           children: [
-          JojoPageHeader(
-            title: 'Bibliothèque',
-            subtitle: 'Toutes tes sélections sont rangées comme des playlists.',
-            trailing: FilledButton.tonalIcon(
-              onPressed: () => _showCreatePlaylistDialog(context, ref),
-              icon: const Icon(Icons.add_rounded),
-              label: const Text('Playlist'),
-            ),
-          ),
-          const SizedBox(height: 20),
-          JojoHeroPanel(
-            label: 'Collection perso',
-            title:
-                '${data.likes.length} favoris • ${playlistRows.length} playlists',
-            subtitle:
-                'Les favoris sont traités comme une playlist, au même niveau que tes autres sélections.',
-            accentColor: const Color(0xFF243742),
-            metadata: [
-              '${data.likes.length} titres aimés',
-              '${playlistRows.length} playlists',
-            ],
-            actions: [
-              FilledButton.icon(
-                onPressed: favoritesPlaylist == null
-                    ? null
-                    : () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => PlaylistScreen(
-                              playlistId: favoritesPlaylistId,
-                            ),
-                          ),
-                        );
-                      },
-                icon: const Icon(Icons.favorite_rounded),
-                label: const Text('Ouvrir Favoris'),
+            JojoPageHeader(
+              title: 'Bibliothèque',
+              subtitle:
+                  'Playlists, favoris et podcasts suivis dans un seul espace.',
+              trailing: FilledButton.tonalIcon(
+                onPressed: () => _showCreatePlaylistDialog(context, ref),
+                icon: const Icon(Icons.add_rounded),
+                label: const Text('Playlist'),
               ),
-            ],
-          ),
-          const SizedBox(height: 22),
-          JojoSurfaceCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const JojoSectionHeading(
-                  title: 'Playlists',
-                  subtitle: 'Favoris inclus, plus tes playlists perso modifiables.',
-                ),
-                const SizedBox(height: 14),
-                if (playlistRows.isEmpty)
-                  const JojoStateMessage(
-                    icon: Icons.playlist_add_check_rounded,
-                    message:
-                        'Crée ta première playlist pour organiser tes titres.',
-                  )
-                else
-                  ...playlistRows.map(
-                    (playlist) => Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: _PlaylistRowCard(
-                        playlist: playlist,
-                        isOfflineEnabled: downloadedPlaylistIds.contains(
-                          playlist.id,
-                        ),
-                        onTap: () {
+            ),
+            const SizedBox(height: 20),
+            JojoHeroPanel(
+              label: 'Collection perso',
+              title:
+                  '${data.likes.length} favoris • ${playlistRows.length} playlists • ${followedPodcasts.length} podcasts',
+              subtitle:
+                  'Les favoris sont traités comme une playlist, et les podcasts suivis restent ici comme des sélections durables.',
+              accentColor: const Color(0xFF243742),
+              metadata: [
+                '${data.likes.length} titres aimés',
+                '${playlistRows.length} playlists',
+                '${followedPodcasts.length} podcasts suivis',
+              ],
+              actions: [
+                FilledButton.icon(
+                  onPressed: favoritesPlaylist == null
+                      ? null
+                      : () {
                           Navigator.of(context).push(
                             MaterialPageRoute<void>(
-                              builder: (_) =>
-                                  PlaylistScreen(playlistId: playlist.id),
+                              builder: (_) => PlaylistScreen(
+                                playlistId: favoritesPlaylistId,
+                              ),
                             ),
                           );
                         },
-                      ),
-                    ),
-                  ),
+                  icon: const Icon(Icons.favorite_rounded),
+                  label: const Text('Ouvrir Favoris'),
+                ),
               ],
             ),
-          ),
-        ],
+            const SizedBox(height: 22),
+            if (followedPodcasts.isNotEmpty) ...[
+              JojoSurfaceCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const JojoSectionHeading(
+                      title: 'Podcasts suivis',
+                      subtitle:
+                          'Chaque podcast suivi vit ici comme une sélection permanente.',
+                    ),
+                    const SizedBox(height: 14),
+                    ...followedPodcasts.map(
+                      (podcast) => Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: _PodcastRowCard(
+                          podcast: podcast,
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => PodcastScreen(podcast: podcast),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 18),
+            ],
+            JojoSurfaceCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const JojoSectionHeading(
+                    title: 'Playlists',
+                    subtitle:
+                        'Favoris inclus, plus tes playlists perso modifiables.',
+                  ),
+                  const SizedBox(height: 14),
+                  if (playlistRows.isEmpty)
+                    const JojoStateMessage(
+                      icon: Icons.playlist_add_check_rounded,
+                      message:
+                          'Crée ta première playlist pour organiser tes titres.',
+                    )
+                  else
+                    ...playlistRows.map(
+                      (playlist) => Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: _PlaylistRowCard(
+                          playlist: playlist,
+                          isOfflineEnabled: downloadedPlaylistIds.contains(
+                            playlist.id,
+                          ),
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) =>
+                                    PlaylistScreen(playlistId: playlist.id),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
         );
       },
       error: (error, stackTrace) => Center(
@@ -1301,314 +1347,6 @@ String _describeLibraryLoadError(Object error) {
     return 'Connexion à la bibliothèque impossible pour le moment.';
   }
   return 'Bibliothèque indisponible pour le moment. Réessaie.';
-}
-
-class _ProfileTab extends ConsumerWidget {
-  const _ProfileTab({required this.active, required this.onLogout});
-
-  final bool active;
-  final Future<void> Function() onLogout;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (!active) {
-      return const SizedBox.shrink();
-    }
-    final session = ref.watch(sessionControllerProvider).asData?.value;
-    final spotify = ref.watch(spotifyIntegrationProvider);
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(18, 28, 18, 160),
-      children: [
-        const JojoPageHeader(
-          title: 'Profil',
-          subtitle: 'Compte JojoMusique, signaux internes et session active.',
-        ),
-        const SizedBox(height: 20),
-        JojoHeroPanel(
-          label: 'Compte actif',
-          title: session?.user.name ?? 'Utilisateur',
-          subtitle: session?.user.email ?? '',
-          accentColor: const Color(0xFF312D1A),
-          metadata: const ['Historique local', 'Recommandations', 'Playlists'],
-        ),
-        const SizedBox(height: 18),
-        const JojoSurfaceCard(
-          child: Text(
-            'Le compte JojoMusique reste la source de vérité: écoute, favoris, playlists, téléchargements et recommandations sont pilotés ici.',
-          ),
-        ),
-        const SizedBox(height: 18),
-        _SpotifyIntegrationPanel(spotify: spotify),
-        const SizedBox(height: 18),
-        FilledButton.tonal(
-          onPressed: onLogout,
-          child: const Text('Déconnexion'),
-        ),
-      ],
-    );
-  }
-}
-
-class _SpotifyIntegrationPanel extends ConsumerWidget {
-  const _SpotifyIntegrationPanel({required this.spotify});
-
-  final AsyncValue<SpotifyIntegration> spotify;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return spotify.when(
-      data: (integration) => JojoSurfaceCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const JojoSectionHeading(
-              title: 'Importer depuis Spotify',
-              subtitle:
-                  'Profil, titres likés et podcasts sauvegardés importés dans JojoMusique.',
-            ),
-            const SizedBox(height: 14),
-            if (!integration.configured)
-              JojoStateMessage(
-                icon: Icons.settings_suggest_rounded,
-                message:
-                    integration.configurationHint ??
-                    'Le backend Spotify n’est pas encore configuré. Ajoute le client ID, le client secret et le redirect URI côté API.',
-              )
-            else if (!integration.connected) ...[
-              const JojoStateMessage(
-                icon: Icons.account_circle_outlined,
-                message:
-                    'Clique pour connecter ton compte Spotify. Le backend importera ton profil, tes titres likés et tes shows/épisodes sauvegardés.',
-              ),
-              const SizedBox(height: 14),
-              FilledButton.icon(
-                onPressed: () async {
-                  try {
-                    final uri = await ref
-                        .read(apiProvider)
-                        .createSpotifyConnectUrl();
-                    await launchUrl(uri, mode: LaunchMode.externalApplication);
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Connexion ouverte dans le navigateur. Termine l’autorisation Spotify, puis reviens ici.',
-                          ),
-                        ),
-                      );
-                    }
-                  } catch (error) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            'Impossible d’ouvrir la connexion Spotify: $error',
-                          ),
-                        ),
-                      );
-                    }
-                  }
-                },
-                icon: const Icon(Icons.link_rounded),
-                label: const Text('Connecter Spotify'),
-              ),
-              const SizedBox(height: 10),
-              OutlinedButton.icon(
-                onPressed: () => ref.invalidate(spotifyIntegrationProvider),
-                icon: const Icon(Icons.refresh_rounded),
-                label: const Text('Rafraîchir le statut'),
-              ),
-            ] else ...[
-              Row(
-                children: [
-                  CircleAvatar(
-                    radius: 26,
-                    backgroundColor: JojoColors.surfaceBright,
-                    backgroundImage: integration.avatarUrl == null
-                        ? null
-                        : NetworkImage(integration.avatarUrl!),
-                    child: integration.avatarUrl == null
-                        ? const Icon(Icons.person_rounded)
-                        : null,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          integration.displayName ?? 'Compte Spotify',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          [
-                                integration.email,
-                                integration.product,
-                                integration.country,
-                              ]
-                              .whereType<String>()
-                              .where((value) => value.isNotEmpty)
-                              .join(' • '),
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: [
-                  _StatPill(
-                    label: '${integration.likedTracksImported} titres likés',
-                  ),
-                  _StatPill(label: '${integration.savedShowsImported} shows'),
-                  _StatPill(
-                    label: '${integration.savedEpisodesImported} épisodes',
-                  ),
-                  _StatPill(
-                    label: '${integration.recentTracksImported} récents',
-                  ),
-                ],
-              ),
-              if (integration.importedAt != null) ...[
-                const SizedBox(height: 10),
-                Text(
-                  'Dernière importation: ${formatCompactDate(integration.importedAt)}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  FilledButton.icon(
-                    onPressed: () async {
-                      try {
-                        await ref.read(apiProvider).syncSpotifyIntegration();
-                        ref.invalidate(spotifyIntegrationProvider);
-                        ref.invalidate(homeControllerProvider);
-                        ref.invalidate(libraryControllerProvider);
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Import Spotify mis à jour.'),
-                            ),
-                          );
-                        }
-                      } catch (error) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                'Synchronisation Spotify impossible: $error',
-                              ),
-                            ),
-                          );
-                        }
-                      }
-                    },
-                    icon: const Icon(Icons.sync_rounded),
-                    label: const Text('Synchroniser'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      await ref
-                          .read(apiProvider)
-                          .disconnectSpotifyIntegration();
-                      ref.invalidate(spotifyIntegrationProvider);
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Compte Spotify déconnecté.'),
-                          ),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.link_off_rounded),
-                    label: const Text('Déconnecter'),
-                  ),
-                ],
-              ),
-              if (integration.savedShows.isNotEmpty) ...[
-                const SizedBox(height: 18),
-                const JojoSectionHeading(
-                  title: 'Shows importés',
-                  subtitle:
-                      'Aperçu des podcasts Spotify sauvegardés dans ton profil.',
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  height: 282,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: integration.savedShows.length,
-                    separatorBuilder: (context, index) =>
-                        const SizedBox(width: 14),
-                    itemBuilder: (context, index) {
-                      final show = integration.savedShows[index];
-                      return JojoPosterCard(
-                        title: show.title,
-                        subtitle: show.publisher,
-                        artworkUrl: show.artworkUrl,
-                        badge: 'Spotify',
-                        width: 188,
-                        height: 176,
-                        backgroundColor: const Color(0xFF15181F),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => PodcastScreen(podcast: show),
-                            ),
-                          );
-                        },
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ],
-          ],
-        ),
-      ),
-      error: (error, stackTrace) => JojoStateMessage(
-        icon: Icons.error_outline_rounded,
-        message: 'Erreur intégration Spotify: $error',
-      ),
-      loading: () => const Padding(
-        padding: EdgeInsets.all(16),
-        child: Center(child: CircularProgressIndicator()),
-      ),
-    );
-  }
-}
-
-class _StatPill extends StatelessWidget {
-  const _StatPill({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(999),
-        color: const Color(0x660C1718),
-        border: Border.all(color: const Color(0x1FFFFFFF)),
-      ),
-      child: Text(
-        label,
-        style: Theme.of(
-          context,
-        ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w800),
-      ),
-    );
-  }
 }
 
 class _TrackSection extends ConsumerStatefulWidget {

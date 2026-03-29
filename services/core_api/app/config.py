@@ -22,6 +22,17 @@ class Settings(BaseSettings):
         "user-library-read user-read-email user-read-private user-read-recently-played"
     )
     genius_access_token: str = ""
+    cors_allow_origins: str = (
+        "https://jojomusic-web.vercel.app,"
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
+        "http://localhost:8877,"
+        "http://127.0.0.1:8877"
+    )
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
 
 
 settings = Settings()

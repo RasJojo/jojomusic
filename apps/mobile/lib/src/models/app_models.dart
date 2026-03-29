@@ -295,6 +295,18 @@ class Podcast {
         ? null
         : DateTime.tryParse(json['release_date'] as String),
   );
+
+  Map<String, dynamic> toJson() => {
+    'podcast_key': podcastKey,
+    'title': title,
+    'publisher': publisher,
+    'description': description,
+    'artwork_url': artworkUrl,
+    'feed_url': feedUrl,
+    'external_url': externalUrl,
+    'episode_count': episodeCount,
+    'release_date': releaseDate?.toIso8601String(),
+  };
 }
 
 class PodcastEpisode {

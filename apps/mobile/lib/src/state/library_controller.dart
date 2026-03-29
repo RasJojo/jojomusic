@@ -8,12 +8,34 @@ import '../models/app_models.dart';
 import 'downloads_controller.dart';
 import 'home_controller.dart';
 import 'providers.dart';
+import 'session_controller.dart';
 
 class LibraryState {
-  const LibraryState({required this.likes, required this.playlists});
+  const LibraryState({
+    required this.likes,
+    required this.playlists,
+    required this.followedPodcasts,
+  });
 
   final List<Track> likes;
   final List<Playlist> playlists;
+  final List<Podcast> followedPodcasts;
+
+  bool isLiked(Track track) =>
+      likes.any((item) => item.trackKey == track.trackKey);
+
+  Set<String> playlistIdsForTrack(Track track) => {
+    for (final playlist in playlists)
+      if (playlist.tracks.any((item) => item.track.trackKey == track.trackKey))
+        playlist.id,
+  };
+
+  bool isInPlaylist(String playlistId, Track track) =>
+      playlistIdsForTrack(track).contains(playlistId);
+
+  bool isPodcastFollowed(Podcast podcast) => followedPodcasts.any(
+    (item) => item.podcastKey == podcast.podcastKey,
+  );
 
   Playlist? get favoritesPlaylist {
     if (likes.isEmpty) {
@@ -37,7 +59,7 @@ class LibraryState {
   }
 }
 
-const _libraryCacheKey = 'jojomusic.library.cache';
+const _libraryCacheKeyPrefix = 'jojomusic.library.cache';
 const _libraryFetchTimeout = Duration(seconds: 8);
 
 final libraryControllerProvider =
@@ -46,6 +68,12 @@ final libraryControllerProvider =
     );
 
 class LibraryController extends AsyncNotifier<LibraryState> {
+  String get _libraryCacheKey {
+    final userId =
+        ref.read(sessionControllerProvider).asData?.value?.user.id ?? 'anon';
+    return '$_libraryCacheKeyPrefix.$userId';
+  }
+
   @override
   Future<LibraryState> build() async {
     final cached = await _restoreCachedLibrary();
@@ -149,6 +177,20 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     await refresh();
   }
 
+  Future<void> toggleTrackInPlaylist({
+    required Playlist playlist,
+    required Track track,
+  }) async {
+    if (playlist.tracks.any((item) => item.track.trackKey == track.trackKey)) {
+      await removeFromPlaylist(
+        playlistId: playlist.id,
+        trackKey: track.trackKey,
+      );
+      return;
+    }
+    await addToPlaylist(playlistId: playlist.id, track: track);
+  }
+
   Future<void> removeFromPlaylist({
     required String playlistId,
     required String trackKey,
@@ -164,11 +206,36 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     await refresh();
   }
 
+  Future<void> followPodcast(Podcast podcast) async {
+    await ref.read(apiProvider).followPodcast(podcast);
+    await refresh();
+  }
+
+  Future<void> unfollowPodcast(String podcastKey) async {
+    await ref.read(apiProvider).unfollowPodcast(podcastKey);
+    await refresh();
+  }
+
+  Future<void> togglePodcastFollow(Podcast podcast) async {
+    if (state.asData?.value.isPodcastFollowed(podcast) ?? false) {
+      await unfollowPodcast(podcast.podcastKey);
+      return;
+    }
+    await followPodcast(podcast);
+  }
+
   Future<LibraryState> _fetchLibrary() async {
     final api = ref.read(apiProvider);
-    final likes = await api.fetchLikes();
-    final playlists = await api.fetchPlaylists();
-    return LibraryState(likes: likes, playlists: playlists);
+    final results = await Future.wait([
+      api.fetchLikes(),
+      api.fetchPlaylists(),
+      api.fetchFollowedPodcasts(),
+    ]);
+    return LibraryState(
+      likes: results[0] as List<Track>,
+      playlists: results[1] as List<Playlist>,
+      followedPodcasts: results[2] as List<Podcast>,
+    );
   }
 
   Future<void> _persistLibrary(LibraryState library) async {
@@ -197,6 +264,21 @@ class LibraryController extends AsyncNotifier<LibraryState> {
                   },
                 )
                 .toList(),
+            'followed_podcasts': library.followedPodcasts
+                .map(
+                  (podcast) => {
+                    'podcast_key': podcast.podcastKey,
+                    'title': podcast.title,
+                    'publisher': podcast.publisher,
+                    'description': podcast.description,
+                    'artwork_url': podcast.artworkUrl,
+                    'feed_url': podcast.feedUrl,
+                    'external_url': podcast.externalUrl,
+                    'episode_count': podcast.episodeCount,
+                    'release_date': podcast.releaseDate?.toIso8601String(),
+                  },
+                )
+                .toList(),
           }),
         );
   }
@@ -216,7 +298,14 @@ class LibraryController extends AsyncNotifier<LibraryState> {
       final playlists = (json['playlists'] as List<dynamic>? ?? [])
           .map((item) => Playlist.fromJson(item as Map<String, dynamic>))
           .toList();
-      return LibraryState(likes: likes, playlists: playlists);
+      final followedPodcasts = (json['followed_podcasts'] as List<dynamic>? ?? [])
+          .map((item) => Podcast.fromJson(item as Map<String, dynamic>))
+          .toList();
+      return LibraryState(
+        likes: likes,
+        playlists: playlists,
+        followedPodcasts: followedPodcasts,
+      );
     } catch (_) {
       return null;
     }

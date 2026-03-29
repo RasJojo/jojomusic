@@ -1,0 +1,208 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AudioAssetStatus {
+  QUEUED
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum ImageAssetStatus {
+  QUEUED
+  PROCESSING
+  READY
+  FAILED
+}
+
+model User {
+  id                   String               @id @db.VarChar(36)
+  email                String               @unique @db.VarChar(255)
+  name                 String               @db.VarChar(120)
+  passwordHash         String               @map("password_hash") @db.VarChar(255)
+  createdAt            DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  playlists            Playlist[]
+  likedTracks          SavedTrack[]
+  playbackEvents       PlaybackEvent[]
+  spotifyLink          SpotifyAccountLink?
+  savedPodcastShows    SavedPodcastShow[]
+  savedPodcastEpisodes SavedPodcastEpisode[]
+
+  @@map("users")
+}
+
+model Playlist {
+  id          String         @id @db.VarChar(36)
+  userId      String         @map("user_id") @db.VarChar(36)
+  name        String         @db.VarChar(120)
+  description String        @default("")
+  artworkUrl  String?        @map("artwork_url") @db.VarChar(1024)
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tracks      PlaylistTrack[]
+
+  @@index([userId])
+  @@map("playlists")
+}
+
+model PlaylistTrack {
+  id           String   @id @db.VarChar(36)
+  playlistId   String   @map("playlist_id") @db.VarChar(36)
+  trackKey     String   @map("track_key") @db.VarChar(255)
+  position     Int
+  trackPayload Json     @map("track_payload")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  playlist     Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, trackKey], map: "uq_playlist_track")
+  @@index([playlistId])
+  @@index([trackKey])
+  @@map("playlist_tracks")
+}
+
+model SavedTrack {
+  id           String   @id @db.VarChar(36)
+  userId       String   @map("user_id") @db.VarChar(36)
+  trackKey     String   @map("track_key") @db.VarChar(255)
+  trackPayload Json     @map("track_payload")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, trackKey], map: "uq_saved_track")
+  @@index([userId])
+  @@index([trackKey])
+  @@map("saved_tracks")
+}
+
+model PlaybackEvent {
+  id              String   @id @db.VarChar(36)
+  userId          String   @map("user_id") @db.VarChar(36)
+  trackKey        String   @map("track_key") @db.VarChar(255)
+  eventType       String   @map("event_type") @db.VarChar(40)
+  listenedMs      Int      @default(0) @map("listened_ms")
+  completionRatio Float    @default(0.0) @map("completion_ratio")
+  trackPayload    Json     @map("track_payload")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([trackKey])
+  @@index([eventType])
+  @@index([createdAt])
+  @@map("playback_events")
+}
+
+model AudioAsset {
+  id               String           @id @db.VarChar(36)
+  lookupKey        String           @unique @map("lookup_key") @db.VarChar(128)
+  trackKey         String           @map("track_key") @db.VarChar(255)
+  query            String           @db.VarChar(512)
+  title            String           @db.VarChar(255)
+  artist           String           @db.VarChar(255)
+  assetKey         String           @unique @map("asset_key") @db.VarChar(255)
+  status           AudioAssetStatus @default(QUEUED)
+  filePath         String?          @map("file_path") @db.VarChar(1024)
+  publicPath       String?          @map("public_path") @db.VarChar(1024)
+  thumbnailUrl     String?          @map("thumbnail_url") @db.VarChar(1024)
+  durationMs       Int?             @map("duration_ms")
+  source           String           @default("youtube") @db.VarChar(50)
+  sourceWebpageUrl String?          @map("source_webpage_url") @db.VarChar(1024)
+  sourceStreamUrl  String?          @map("source_stream_url") @db.Text
+  failureReason    String?          @map("failure_reason") @db.Text
+  requestedAt      DateTime         @default(now()) @map("requested_at") @db.Timestamptz(6)
+  lastQueuedAt     DateTime?        @map("last_queued_at") @db.Timestamptz(6)
+  processedAt      DateTime?        @map("processed_at") @db.Timestamptz(6)
+  expiresAt        DateTime?        @map("expires_at") @db.Timestamptz(6)
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([trackKey])
+  @@index([status])
+  @@index([lastQueuedAt])
+  @@map("audio_assets")
+}
+
+model ImageAsset {
+  id            String           @id @db.VarChar(36)
+  lookupKey     String           @unique @map("lookup_key") @db.VarChar(128)
+  entityType    String           @map("entity_type") @db.VarChar(40)
+  entityKey     String           @map("entity_key") @db.VarChar(255)
+  sourceUrl     String           @map("source_url") @db.VarChar(2048)
+  assetKey      String           @unique @map("asset_key") @db.VarChar(255)
+  status        ImageAssetStatus @default(QUEUED)
+  filePath      String?          @map("file_path") @db.VarChar(1024)
+  publicPath    String?          @map("public_path") @db.VarChar(1024)
+  contentType   String?          @map("content_type") @db.VarChar(120)
+  failureReason String?          @map("failure_reason") @db.Text
+  requestedAt   DateTime         @default(now()) @map("requested_at") @db.Timestamptz(6)
+  lastQueuedAt  DateTime?        @map("last_queued_at") @db.Timestamptz(6)
+  processedAt   DateTime?        @map("processed_at") @db.Timestamptz(6)
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([entityType, entityKey])
+  @@index([status])
+  @@index([lastQueuedAt])
+  @@map("image_assets")
+}
+
+model SpotifyAccountLink {
+  id                    String    @id @db.VarChar(36)
+  userId                String    @unique @map("user_id") @db.VarChar(36)
+  spotifyUserId         String    @unique @map("spotify_user_id") @db.VarChar(128)
+  displayName           String?   @map("display_name") @db.VarChar(255)
+  email                 String?   @db.VarChar(255)
+  avatarUrl             String?   @map("avatar_url") @db.VarChar(1024)
+  country               String?   @db.VarChar(12)
+  product               String?   @db.VarChar(50)
+  accessToken           String?   @map("access_token") @db.Text
+  refreshToken          String?   @map("refresh_token") @db.Text
+  tokenExpiresAt        DateTime? @map("token_expires_at") @db.Timestamptz(6)
+  importedAt            DateTime? @map("imported_at") @db.Timestamptz(6)
+  likedTracksImported   Int       @default(0) @map("liked_tracks_imported")
+  savedShowsImported    Int       @default(0) @map("saved_shows_imported")
+  savedEpisodesImported Int       @default(0) @map("saved_episodes_imported")
+  recentTracksImported  Int       @default(0) @map("recent_tracks_imported")
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([spotifyUserId])
+  @@map("spotify_account_links")
+}
+
+model SavedPodcastShow {
+  id            String   @id @db.VarChar(36)
+  userId        String   @map("user_id") @db.VarChar(36)
+  podcastKey    String   @map("podcast_key") @db.VarChar(255)
+  podcastPayload Json    @map("podcast_payload")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, podcastKey], map: "uq_saved_podcast_show")
+  @@index([userId])
+  @@index([podcastKey])
+  @@map("saved_podcast_shows")
+}
+
+model SavedPodcastEpisode {
+  id             String   @id @db.VarChar(36)
+  userId         String   @map("user_id") @db.VarChar(36)
+  episodeKey     String   @map("episode_key") @db.VarChar(255)
+  episodePayload Json     @map("episode_payload")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, episodeKey], map: "uq_saved_podcast_episode")
+  @@index([userId])
+  @@index([episodeKey])
+  @@map("saved_podcast_episodes")
+}

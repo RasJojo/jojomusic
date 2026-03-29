@@ -19,6 +19,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
        _player = ja.AudioPlayer() {
     _api = ApiService(environment: _environment);
     _player.playerStateStream.listen(_broadcastState);
+    _player.playbackEventStream.listen(_handlePlaybackEvent);
     _player.durationStream.listen((duration) {
       if (duration != null) {
         _syncCurrentTrackMetadata(durationMs: duration.inMilliseconds);
@@ -31,11 +32,17 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
           bufferedPosition: _player.bufferedPosition,
         ),
       );
+      _maybeHandleImplicitCompletion(position: position);
     });
     _player.processingStateStream.distinct().listen((state) {
       if (state == ja.ProcessingState.completed) {
         unawaited(_handleQueueCompletion());
+      } else {
+        _maybeHandleImplicitCompletion();
       }
+    });
+    _completionWatchdog = Timer.periodic(const Duration(milliseconds: 900), (_) {
+      _watchdogForCompletion();
     });
   }
 
@@ -48,17 +55,35 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   final Map<String, Future<ResolvedStream>> _resolveInFlight = {};
   final Map<String, LyricsData?> _lyricsCache = {};
   final Map<String, Future<LyricsData?>> _lyricsInFlight = {};
+  late final Timer _completionWatchdog;
   int _currentIndex = -1;
   bool _isHandlingQueueCompletion = false;
+  bool _autoplayEnabled = true;
+  bool _isExtendingQueue = false;
+  bool _pauseRequestedManually = false;
+  String? _lastAutoplaySeedKey;
+  String? _completionGuardTrackKey;
+  DateTime? _completionGuardAt;
+  String? _lastProgressTrackKey;
+  int? _lastProgressPositionMs;
+  DateTime? _lastProgressAt;
+  int _loadGeneration = 0;
+  Future<void> _playerMutationChain = Future<void>.value();
 
-  Future<void> loadQueue(List<Track> tracks, {int initialIndex = 0}) async {
+  Future<void> loadQueue(
+    List<Track> tracks, {
+    int initialIndex = 0,
+    bool autoplay = true,
+  }) async {
     if (tracks.isEmpty) {
       return;
     }
+    _autoplayEnabled = autoplay;
+    _lastAutoplaySeedKey = null;
     _queueTracks
       ..clear()
       ..addAll(tracks);
-    queue.add(_queueTracks.map(_toMediaItem).toList());
+    queue.add(_buildQueueMediaItems());
     await _loadAt(initialIndex);
   }
 
@@ -116,6 +141,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }) async {
     _queueTracks.clear();
     _currentIndex = 0;
+    _autoplayEnabled = false;
+    _lastAutoplaySeedKey = null;
     queue.add([
       MediaItem(
         id: id,
@@ -126,12 +153,20 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         duration: durationMs == null
             ? null
             : Duration(milliseconds: durationMs),
+        extras: {
+          'track_key': id,
+          'artwork_url': artworkUrl,
+        },
       ),
     ]);
-    await _player.setUrl(sourceUrl);
-    mediaItem.add(queue.value.first);
-    _broadcastState(_player.playerState);
-    await _player.play();
+    await _mutatePlayer(() async {
+      await _safeStopPlayer();
+      await _player.setUrl(sourceUrl);
+      mediaItem.add(queue.value.first);
+      _broadcastState(_player.playerState);
+      await _player.play();
+      _broadcastState(_player.playerState);
+    });
   }
 
   Track? get currentTrack =>
@@ -140,13 +175,20 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       : null;
 
   @override
-  Future<void> play() => _player.play();
+  Future<void> play() {
+    _pauseRequestedManually = false;
+    return _player.play();
+  }
 
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() {
+    _pauseRequestedManually = true;
+    return _player.pause();
+  }
 
   @override
   Future<void> stop() async {
+    _pauseRequestedManually = true;
     await _player.stop();
     await super.stop();
   }
@@ -158,6 +200,13 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   Future<void> skipToNext() async {
     if (_currentIndex < _queueTracks.length - 1) {
       await _loadAt(_currentIndex + 1);
+      return;
+    }
+    if (_autoplayEnabled) {
+      await _ensureAutoplayTail(seed: currentTrack);
+      if (_currentIndex < _queueTracks.length - 1) {
+        await _loadAt(_currentIndex + 1);
+      }
     }
   }
 
@@ -177,9 +226,16 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   Future<void> _loadAt(int index) async {
+    final loadGeneration = ++_loadGeneration;
     _currentIndex = index;
+    _completionGuardTrackKey = null;
+    _completionGuardAt = null;
+    _lastProgressTrackKey = _queueTracks[index].trackKey;
+    _lastProgressPositionMs = 0;
+    _lastProgressAt = DateTime.now();
+    _pauseRequestedManually = false;
     final track = _queueTracks[index];
-    mediaItem.add(_toMediaItem(track));
+    await _safeStopPlayer();
     _broadcastLoadingState();
     final offline = await _database.findOfflineTrack(track.trackKey);
     final offlinePath = await _readyOfflinePath(offline);
@@ -188,6 +244,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         ? Uri.file(offlinePath).toString()
         : (resolved = await _resolveTrack(track)).streamUrl;
 
+    if (loadGeneration != _loadGeneration) {
+      return;
+    }
+
     if (resolved != null) {
       _syncCurrentTrackMetadata(
         artworkUrl: resolved.thumbnailUrl,
@@ -195,16 +255,50 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       );
     }
 
-    if (source.startsWith('file://')) {
-      await _player.setFilePath(Uri.parse(source).toFilePath());
-    } else {
-      await _player.setUrl(source);
-    }
+    await _mutatePlayer(() async {
+      if (loadGeneration != _loadGeneration) {
+        return;
+      }
 
-    _broadcastState(_player.playerState);
-    unawaited(preloadLyricsForTrack(track));
-    unawaited(_prefetchQueueAround(index));
-    await _player.play();
+      if (source.startsWith('file://')) {
+        await _player.setFilePath(Uri.parse(source).toFilePath());
+      } else {
+        await _player.setUrl(source);
+      }
+
+      if (loadGeneration != _loadGeneration) {
+        await _safeStopPlayer();
+        return;
+      }
+
+      mediaItem.add(_toMediaItem(_queueTracks[index], index: index));
+      _broadcastState(_player.playerState);
+      unawaited(preloadLyricsForTrack(track));
+      unawaited(_prefetchQueueAround(index));
+      await _player.play();
+      _broadcastState(_player.playerState);
+    });
+  }
+
+  Future<void> _safeStopPlayer() async {
+    try {
+      await _player.stop();
+    } catch (_) {}
+  }
+
+  Future<void> _mutatePlayer(Future<void> Function() action) {
+    final completer = Completer<void>();
+    _playerMutationChain = _playerMutationChain
+        .catchError((_) {})
+        .then((_) async {
+          try {
+            await action();
+            completer.complete();
+          } catch (error, stackTrace) {
+            completer.completeError(error, stackTrace);
+          }
+        });
+    return completer.future;
   }
 
   Future<String?> _readyOfflinePath(OfflineTrack? offline) async {
@@ -343,6 +437,9 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         unawaited(_resolveTrack(track));
       }
     }
+    if (_autoplayEnabled && _queueTracks.length - index <= 3) {
+      unawaited(_ensureAutoplayTail(seed: _queueTracks[index]));
+    }
   }
 
   Future<void> _handleQueueCompletion() async {
@@ -353,6 +450,13 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     try {
       if (_currentIndex < _queueTracks.length - 1) {
         await _loadAt(_currentIndex + 1);
+      } else if (_autoplayEnabled) {
+        await _ensureAutoplayTail(seed: currentTrack);
+        if (_currentIndex < _queueTracks.length - 1) {
+          await _loadAt(_currentIndex + 1);
+        } else {
+          await stop();
+        }
       } else {
         await stop();
       }
@@ -365,8 +469,186 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     }
   }
 
-  MediaItem _toMediaItem(Track track) => MediaItem(
-    id: track.trackKey,
+  void _handlePlaybackEvent(ja.PlaybackEvent event) {
+    final duration = _effectiveTrackDuration();
+    if (_currentIndex < 0 || duration == null || duration == Duration.zero) {
+      return;
+    }
+    final atEnd = event.updatePosition >= duration - const Duration(milliseconds: 250);
+    final completed =
+        event.processingState == ja.ProcessingState.completed ||
+        (atEnd &&
+            !_player.playing &&
+            event.processingState == ja.ProcessingState.ready);
+    if (completed) {
+      unawaited(_handleQueueCompletion());
+    }
+  }
+
+  void _maybeHandleImplicitCompletion({Duration? position}) {
+    final track = currentTrack;
+    final duration = _effectiveTrackDuration();
+    if (track == null ||
+        duration == null ||
+        duration <= const Duration(seconds: 1)) {
+      return;
+    }
+
+    final currentPosition = position ?? _player.position;
+    final remaining = duration - currentPosition;
+    final processingState = _player.processingState;
+    final looksFinished =
+        remaining <= const Duration(milliseconds: 350) &&
+        (processingState == ja.ProcessingState.completed ||
+            (!_player.playing && processingState == ja.ProcessingState.ready));
+    if (!looksFinished) {
+      return;
+    }
+
+    final now = DateTime.now();
+    if (_completionGuardTrackKey == track.trackKey &&
+        _completionGuardAt != null &&
+        now.difference(_completionGuardAt!) < const Duration(seconds: 2)) {
+      return;
+    }
+    _completionGuardTrackKey = track.trackKey;
+    _completionGuardAt = now;
+    unawaited(_handleQueueCompletion());
+  }
+
+  void _watchdogForCompletion() {
+    if (_pauseRequestedManually || _isHandlingQueueCompletion) {
+      return;
+    }
+    final track = currentTrack;
+    final duration = _effectiveTrackDuration();
+    if (track == null || duration == null || duration <= const Duration(seconds: 1)) {
+      return;
+    }
+    final position = _player.position;
+    _recordProgress(track.trackKey, position);
+    final remaining = duration - position;
+    final looksFinished =
+        !_player.playing &&
+        remaining <= const Duration(seconds: 2) &&
+        _player.processingState != ja.ProcessingState.loading &&
+        _player.processingState != ja.ProcessingState.buffering;
+    final looksStalledAtTail =
+        remaining <= const Duration(seconds: 3) &&
+        _progressHasStalled(track.trackKey, position, const Duration(seconds: 2));
+    if (!looksFinished && !looksStalledAtTail) {
+      return;
+    }
+    final now = DateTime.now();
+    if (_completionGuardTrackKey == track.trackKey &&
+        _completionGuardAt != null &&
+        now.difference(_completionGuardAt!) < const Duration(seconds: 2)) {
+      return;
+    }
+    _completionGuardTrackKey = track.trackKey;
+    _completionGuardAt = now;
+    unawaited(_handleQueueCompletion());
+  }
+
+  Duration? _effectiveTrackDuration() {
+    final playerDuration = _player.duration;
+    if (playerDuration != null && playerDuration > Duration.zero) {
+      return playerDuration;
+    }
+    final trackDurationMs = currentTrack?.durationMs;
+    if (trackDurationMs != null && trackDurationMs > 0) {
+      return Duration(milliseconds: trackDurationMs);
+    }
+    final mediaDuration = mediaItem.value?.duration;
+    if (mediaDuration != null && mediaDuration > Duration.zero) {
+      return mediaDuration;
+    }
+    return null;
+  }
+
+  void _recordProgress(String trackKey, Duration position) {
+    final positionMs = position.inMilliseconds;
+    final now = DateTime.now();
+    if (_lastProgressTrackKey != trackKey) {
+      _lastProgressTrackKey = trackKey;
+      _lastProgressPositionMs = positionMs;
+      _lastProgressAt = now;
+      return;
+    }
+
+    final previousPositionMs = _lastProgressPositionMs;
+    if (previousPositionMs == null || (positionMs - previousPositionMs).abs() >= 400) {
+      _lastProgressPositionMs = positionMs;
+      _lastProgressAt = now;
+    }
+  }
+
+  bool _progressHasStalled(
+    String trackKey,
+    Duration position,
+    Duration threshold,
+  ) {
+    _recordProgress(trackKey, position);
+    if (_lastProgressTrackKey != trackKey || _lastProgressAt == null) {
+      return false;
+    }
+    return DateTime.now().difference(_lastProgressAt!) >= threshold;
+  }
+
+  Future<void> _ensureAutoplayTail({Track? seed}) async {
+    final seedTrack = seed ?? currentTrack;
+    if (!_autoplayEnabled ||
+        seedTrack == null ||
+        _isExtendingQueue ||
+        _lastAutoplaySeedKey == seedTrack.trackKey) {
+      return;
+    }
+
+    _isExtendingQueue = true;
+    try {
+      final tracks = await _api.fetchSimilarTracks(
+        seedTrack,
+        limit: 10,
+        excludeTrackKeys: _queueTracks
+            .map((track) => track.trackKey)
+            .toList(growable: false),
+      );
+      if (tracks.isEmpty) {
+        return;
+      }
+      _queueTracks.addAll(tracks);
+      _lastAutoplaySeedKey = seedTrack.trackKey;
+      queue.add(_buildQueueMediaItems());
+      final prefetchIndex = _currentIndex < 0 ? 0 : _currentIndex;
+      unawaited(_prefetchQueueAround(prefetchIndex));
+    } catch (_) {
+      return;
+    } finally {
+      _isExtendingQueue = false;
+    }
+  }
+
+  List<MediaItem> _buildQueueMediaItems() => _queueTracks
+      .asMap()
+      .entries
+      .map((entry) => _toMediaItem(entry.value, index: entry.key))
+      .toList(growable: false);
+
+  String _mediaItemId(Track track, {required int index}) {
+    final parts = [
+      track.externalId,
+      track.trackKey,
+      track.provider,
+      track.artist,
+      track.title,
+      track.album,
+      '$index',
+    ].whereType<String>().where((value) => value.isNotEmpty);
+    return parts.join('::');
+  }
+
+  MediaItem _toMediaItem(Track track, {required int index}) => MediaItem(
+    id: _mediaItemId(track, index: index),
     title: track.title,
     artist: track.artist,
     album: track.album,
@@ -376,6 +658,12 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     duration: track.durationMs == null
         ? null
         : Duration(milliseconds: track.durationMs!),
+    extras: {
+      'track_key': track.trackKey,
+      if (track.externalId != null) 'external_id': track.externalId,
+      if (track.provider.isNotEmpty) 'provider': track.provider,
+      if (track.displayArtworkUrl != null) 'artwork_url': track.displayArtworkUrl,
+    },
   );
 
   void _syncCurrentTrackMetadata({String? artworkUrl, int? durationMs}) {
@@ -395,7 +683,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       durationMs: nextDuration,
     );
     _queueTracks[_currentIndex] = updated;
-    final updatedQueue = _queueTracks.map(_toMediaItem).toList(growable: false);
+    final updatedQueue = _buildQueueMediaItems();
     queue.add(updatedQueue);
     mediaItem.add(updatedQueue[_currentIndex]);
   }
@@ -457,6 +745,12 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       case ja.ProcessingState.completed:
         return AudioProcessingState.completed;
     }
+  }
+
+  @override
+  Future<void> onTaskRemoved() async {
+    _completionWatchdog.cancel();
+    await super.onTaskRemoved();
   }
 }
 

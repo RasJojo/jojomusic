@@ -3,8 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/app_models.dart';
 import '../state/player_controller.dart';
+import 'profile_screen.dart';
 import 'widgets/jojo_surfaces.dart';
-import 'widgets/shell_bottom_bar.dart';
+import 'widgets/shell_chrome.dart';
 
 class CollectionScreen extends ConsumerWidget {
   const CollectionScreen({
@@ -29,9 +30,10 @@ class CollectionScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return JojoPageScaffold(
+    return ShellChrome(
       topColor: const Color(0xFF163032),
-      bottomNavigationBar: const ShellBottomBar(popToRootOnNavigate: true),
+      popToRootOnNavigate: true,
+      onProfilePressed: () => openProfileScreen(context),
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 16, 18, 148),
         children: [

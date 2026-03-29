@@ -11,7 +11,7 @@ class ShellBottomBar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final selectedIndex = ref.watch(shellTabIndexProvider);
+    final selectedIndex = ref.watch(shellTabIndexProvider).clamp(0, 2);
     return Container(
       decoration: const BoxDecoration(
         color: Color(0xF0071112),
@@ -44,11 +44,6 @@ class ShellBottomBar extends ConsumerWidget {
                 icon: Icon(Icons.library_music_outlined),
                 selectedIcon: Icon(Icons.library_music_rounded),
                 label: 'Bibliothèque',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.person_outline_rounded),
-                selectedIcon: Icon(Icons.person_rounded),
-                label: 'Profil',
               ),
             ],
           ),

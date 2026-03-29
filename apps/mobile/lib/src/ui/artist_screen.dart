@@ -5,9 +5,10 @@ import '../models/app_models.dart';
 import '../state/artist_controller.dart';
 import '../state/player_controller.dart';
 import 'album_screen.dart';
+import 'profile_screen.dart';
 import 'theme/jojo_theme.dart';
 import 'widgets/jojo_surfaces.dart';
-import 'widgets/shell_bottom_bar.dart';
+import 'widgets/shell_chrome.dart';
 
 class ArtistScreen extends ConsumerWidget {
   const ArtistScreen({
@@ -28,9 +29,10 @@ class ArtistScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final details = ref.watch(artistDetailsProvider(artist.name));
 
-    return JojoPageScaffold(
+    return ShellChrome(
       topColor: const Color(0xFF123229),
-      bottomNavigationBar: const ShellBottomBar(popToRootOnNavigate: true),
+      popToRootOnNavigate: true,
+      onProfilePressed: () => openProfileScreen(context),
       child: details.when(
         data: (data) => ListView(
           padding: const EdgeInsets.fromLTRB(18, 16, 18, 148),
