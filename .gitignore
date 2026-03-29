@@ -5,13 +5,16 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 *.pyc
+easyappicon-icons-*/
 
 apps/mobile/.dart_tool/
 apps/mobile/build/
 apps/mobile/.packages
 apps/mobile/.flutter-plugins
 apps/mobile/.flutter-plugins-dependencies
+apps/mobile/.metadata
+
+apps/landing/downloads/*.apk
 
 services/core_api/.venv/
 services/resolver_api/.venv/
-
