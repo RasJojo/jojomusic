@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: jojomusic
+      POSTGRES_USER: jojomusic
+      POSTGRES_PASSWORD: jojomusic
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jojomusic -d jojomusic"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  resolver-api:
+    build:
+      context: ./services/resolver_api
+    environment:
+      RESOLVER_TIMEOUT_SECONDS: ${RESOLVER_TIMEOUT_SECONDS:-25}
+    ports:
+      - "8001:8000"
+
+  core-api:
+    build:
+      context: ./services/core_api
+    environment:
+      DATABASE_URL: postgresql+psycopg://jojomusic:jojomusic@postgres:5432/jojomusic
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      RESOLVER_API_URL: http://resolver-api:8000
+      LASTFM_API_KEY: ${LASTFM_API_KEY:-}
+      LASTFM_SHARED_SECRET: ${LASTFM_SHARED_SECRET:-}
+      LRCLIB_BASE_URL: ${LRCLIB_BASE_URL:-https://lrclib.net}
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      SPOTIFY_REDIRECT_URI: ${SPOTIFY_REDIRECT_URI:-}
+      GENIUS_ACCESS_TOKEN: ${GENIUS_ACCESS_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      resolver-api:
+        condition: service_started
+    ports:
+      - "8000:8000"
+
+volumes:
+  postgres_data:

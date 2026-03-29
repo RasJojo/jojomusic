@@ -378,19 +378,6 @@ class _PlayerSheetState extends ConsumerState<_PlayerSheet> {
                           label: const Text('Ajouter'),
                         ),
                         FilledButton.tonalIcon(
-                          onPressed: currentTrack == null
-                              ? null
-                              : () => _showPlaylistPicker(
-                                  context,
-                                  track: currentTrack,
-                                  playlists: library?.playlists ?? const [],
-                                  downloadedPlaylistIds: downloadedPlaylistIds,
-                                  preferDownloaded: true,
-                                ),
-                          icon: const Icon(Icons.download_for_offline_rounded),
-                          label: const Text('Hors ligne'),
-                        ),
-                        FilledButton.tonalIcon(
                           onPressed: _showLyricsSheet,
                           icon: const Icon(Icons.lyrics_outlined),
                           label: const Text('Paroles'),
