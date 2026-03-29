@@ -57,3 +57,7 @@ flutter run --dart-define=API_BASE_URL=http://127.0.0.1:8000
 ## Variables d'environnement
 
 Voir `.env.example`.
+
+## APK Android et landing
+
+L'APK Android n'est plus versionnée dans Git. Avant de redéployer `apps/landing`, copier l'APK locale vers `apps/landing/downloads/JojoMusique-android.apk`, puis lancer le déploiement Vercel depuis ce dossier.
