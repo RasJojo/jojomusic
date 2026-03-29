@@ -184,12 +184,45 @@ class ApiService {
     return PodcastDetails.fromJson(response.data!);
   }
 
+  Future<List<Podcast>> fetchFollowedPodcasts() async {
+    final response = await _dio.get<List<dynamic>>('/api/v1/me/podcasts');
+    return response.data!
+        .map((item) => Podcast.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> followPodcast(Podcast podcast) async {
+    await _dio.post('/api/v1/me/podcasts', data: {'podcast': podcast.toJson()});
+  }
+
+  Future<void> unfollowPodcast(String podcastKey) async {
+    await _dio.delete('/api/v1/me/podcasts/$podcastKey');
+  }
+
   Future<ResolvedStream> resolveTrack(Track track) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/api/v1/tracks/resolve',
       data: {'track': track.toJson()},
     );
     return ResolvedStream.fromJson(response.data!);
+  }
+
+  Future<List<Track>> fetchSimilarTracks(
+    Track track, {
+    int limit = 12,
+    List<String> excludeTrackKeys = const [],
+  }) async {
+    final response = await _dio.post<List<dynamic>>(
+      '/api/v1/tracks/similar',
+      data: {
+        'track': track.toJson(),
+        'limit': limit,
+        'exclude_track_keys': excludeTrackKeys,
+      },
+    );
+    return response.data!
+        .map((item) => Track.fromJson(item as Map<String, dynamic>))
+        .toList();
   }
 
   Future<List<Track>> fetchLikes() async {

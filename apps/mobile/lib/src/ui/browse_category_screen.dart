@@ -6,8 +6,9 @@ import '../state/discovery_controller.dart';
 import '../state/player_controller.dart';
 import 'collection_screen.dart';
 import 'podcast_screen.dart';
+import 'profile_screen.dart';
 import 'widgets/jojo_surfaces.dart';
-import 'widgets/shell_bottom_bar.dart';
+import 'widgets/shell_chrome.dart';
 
 class BrowseCategoryScreen extends ConsumerWidget {
   const BrowseCategoryScreen({
@@ -32,9 +33,10 @@ class BrowseCategoryScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final result = ref.watch(browseCategoryProvider(category.categoryId));
 
-    return JojoPageScaffold(
+    return ShellChrome(
       topColor: _colorFromHex(category.colorHex),
-      bottomNavigationBar: const ShellBottomBar(popToRootOnNavigate: true),
+      popToRootOnNavigate: true,
+      onProfilePressed: () => openProfileScreen(context),
       child: result.when(
         data: (data) => ListView(
           padding: const EdgeInsets.fromLTRB(18, 16, 18, 148),

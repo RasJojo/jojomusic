@@ -26,6 +26,9 @@ final playerControllerProvider = Provider<PlayerController>((ref) {
 
 final pendingTrackKeyListenable = ValueNotifier<String?>(null);
 
+String mediaItemTrackKey(MediaItem item) =>
+    (item.extras?['track_key'] as String?) ?? item.id;
+
 class PlayerController {
   const PlayerController(this.ref);
 
@@ -37,7 +40,11 @@ class PlayerController {
     pendingTrackKeyListenable.value = track.trackKey;
     unawaited(handler.preloadLyricsForTrack(track));
     try {
-      await handler.loadQueue(queue, initialIndex: index < 0 ? 0 : index);
+      await handler.loadQueue(
+        queue,
+        initialIndex: index < 0 ? 0 : index,
+        autoplay: true,
+      );
       pendingTrackKeyListenable.value = null;
       unawaited(
         ref
@@ -132,7 +139,7 @@ class PlayerController {
     if (mediaItem == null) {
       return null;
     }
-    return fetchLyricsForMediaItem(mediaItem, forceRefresh: true);
+    return fetchLyricsForMediaItem(mediaItem);
   }
 
   Future<LyricsData?> fetchLyricsForMediaItem(
@@ -140,11 +147,15 @@ class PlayerController {
     bool forceRefresh = false,
   }) {
     final track = Track(
-      trackKey: mediaItem.id,
+      trackKey: mediaItemTrackKey(mediaItem),
       title: mediaItem.title,
       artist: mediaItem.artist ?? 'Unknown artist',
       album: mediaItem.album,
-      artworkUrl: mediaItem.artUri?.toString(),
+      artworkUrl:
+          (mediaItem.extras?['artwork_url'] as String?) ??
+          mediaItem.artUri?.toString(),
+      provider: (mediaItem.extras?['provider'] as String?) ?? 'internal',
+      externalId: mediaItem.extras?['external_id'] as String?,
       durationMs: mediaItem.duration?.inMilliseconds,
     );
     return ref
@@ -162,11 +173,15 @@ class PlayerController {
 
   Future<void> preloadLyricsForMediaItem(MediaItem mediaItem) {
     final track = Track(
-      trackKey: mediaItem.id,
+      trackKey: mediaItemTrackKey(mediaItem),
       title: mediaItem.title,
       artist: mediaItem.artist ?? 'Unknown artist',
       album: mediaItem.album,
-      artworkUrl: mediaItem.artUri?.toString(),
+      artworkUrl:
+          (mediaItem.extras?['artwork_url'] as String?) ??
+          mediaItem.artUri?.toString(),
+      provider: (mediaItem.extras?['provider'] as String?) ?? 'internal',
+      externalId: mediaItem.extras?['external_id'] as String?,
       durationMs: mediaItem.duration?.inMilliseconds,
     );
     return preloadLyricsForTrack(track);

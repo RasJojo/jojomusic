@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../models/app_models.dart';
+import '../../state/library_controller.dart';
 import '../../state/player_controller.dart';
 import '../theme/jojo_theme.dart';
 import 'media_artwork.dart';
@@ -14,11 +16,13 @@ class JojoPageScaffold extends StatelessWidget {
     super.key,
     this.topColor,
     this.bottomNavigationBar,
+    this.maxContentWidth = 1320,
   });
 
   final Widget child;
   final Color? topColor;
   final Widget? bottomNavigationBar;
+  final double? maxContentWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -48,13 +52,15 @@ class JojoPageScaffold extends StatelessWidget {
             ),
             SafeArea(
               bottom: false,
-              child: Align(
-                alignment: Alignment.topCenter,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1320),
-                  child: child,
-                ),
-              ),
+              child: maxContentWidth == null
+                  ? child
+                  : Align(
+                      alignment: Alignment.topCenter,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(maxWidth: maxContentWidth!),
+                        child: child,
+                      ),
+                    ),
             ),
           ],
         ),
@@ -391,7 +397,11 @@ class _JojoTrackTileState extends ConsumerState<JojoTrackTile> {
   @override
   Widget build(BuildContext context) {
     final mediaItem = ref.watch(currentMediaItemProvider).asData?.value;
-    final isCurrent = mediaItem?.id == widget.track.trackKey;
+    final isCurrent =
+        mediaItem != null && mediaItemTrackKey(mediaItem) == widget.track.trackKey;
+    final library = ref.watch(libraryControllerProvider).asData?.value;
+    final isLiked = library?.isLiked(widget.track) ?? false;
+    final playlistCount = library?.playlistIdsForTrack(widget.track).length ?? 0;
 
     return AnimatedScale(
       scale: _pressed ? 0.99 : (_hovered ? 1.006 : 1),
@@ -423,6 +433,13 @@ class _JojoTrackTileState extends ConsumerState<JojoTrackTile> {
                             icon: const Icon(Icons.more_horiz_rounded),
                           )
                         : null);
+          final libraryWidget =
+              isLiked || playlistCount > 0
+              ? _TrackLibraryIndicators(
+                  isLiked: isLiked,
+                  playlistCount: playlistCount,
+                )
+              : null;
           final borderColor = isLoading
               ? JojoColors.secondary.withValues(alpha: 0.78)
               : isCurrent
@@ -537,12 +554,19 @@ class _JojoTrackTileState extends ConsumerState<JojoTrackTile> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  if (widget.statusIndicator != null || actionWidget != null)
+                  if (widget.statusIndicator != null ||
+                      libraryWidget != null ||
+                      actionWidget != null)
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (widget.statusIndicator != null) ...[
                           widget.statusIndicator!,
+                          if (libraryWidget != null || actionWidget != null)
+                            const SizedBox(width: 6),
+                        ],
+                        if (libraryWidget != null) ...[
+                          libraryWidget,
                           if (actionWidget != null) const SizedBox(width: 6),
                         ],
                         ...switch (actionWidget) {
@@ -557,6 +581,157 @@ class _JojoTrackTileState extends ConsumerState<JojoTrackTile> {
           );
         },
       ),
+    );
+  }
+}
+
+class JojoQueueTile extends StatelessWidget {
+  const JojoQueueTile({
+    required this.item,
+    required this.index,
+    required this.onTap,
+    this.isCurrent = false,
+    super.key,
+  });
+
+  final MediaItem item;
+  final int index;
+  final bool isCurrent;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(22),
+      child: Ink(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(22),
+          color: isCurrent ? const Color(0x8A12312D) : const Color(0x660C1718),
+          border: Border.all(
+            color: isCurrent
+                ? JojoColors.primary.withValues(alpha: 0.72)
+                : const Color(0x14FFFFFF),
+          ),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 28,
+              child: Text(
+                '${index + 1}',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: isCurrent ? JojoColors.primary : JojoColors.mutedStrong,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+            const SizedBox(width: 10),
+            MediaArtwork(
+              url: item.artUri?.toString(),
+              size: 58,
+              borderRadius: 16,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: isCurrent ? JojoColors.primary : null,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    [item.artist, item.album]
+                        .whereType<String>()
+                        .where((value) => value.isNotEmpty)
+                        .join(' • '),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(
+              isCurrent ? Icons.graphic_eq_rounded : Icons.chevron_right_rounded,
+              color: isCurrent ? JojoColors.primary : JojoColors.mutedStrong,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TrackLibraryIndicators extends StatelessWidget {
+  const _TrackLibraryIndicators({
+    required this.isLiked,
+    required this.playlistCount,
+  });
+
+  final bool isLiked;
+  final int playlistCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (isLiked)
+          Tooltip(
+            message: 'Déjà dans les favoris',
+            child: Icon(
+              Icons.favorite_rounded,
+              size: 18,
+              color: const Color(0xFFFF6B8E),
+            ),
+          ),
+        if (isLiked && playlistCount > 0) const SizedBox(width: 6),
+        if (playlistCount > 0)
+          Tooltip(
+            message: playlistCount == 1
+                ? 'Déjà dans 1 playlist'
+                : 'Déjà dans $playlistCount playlists',
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+              decoration: BoxDecoration(
+                color: JojoColors.primary.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(
+                  color: JojoColors.primary.withValues(alpha: 0.24),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.playlist_add_check_circle_rounded,
+                    size: 16,
+                    color: JojoColors.primary,
+                  ),
+                  if (playlistCount > 1) ...[
+                    const SizedBox(width: 4),
+                    Text(
+                      '$playlistCount',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: JojoColors.primary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -611,21 +786,51 @@ class JojoPageHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final mediaQuery = MediaQuery.of(context);
+    final useInlineDesktopHeader =
+        mediaQuery.size.width >= 1180 && mediaQuery.size.shortestSide >= 700;
+
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         if (leading != null) ...[leading!, const SizedBox(width: 14)],
         Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: Theme.of(context).textTheme.headlineMedium),
-              if (subtitle != null && subtitle!.isNotEmpty) ...[
-                const SizedBox(height: 6),
-                Text(subtitle!, style: Theme.of(context).textTheme.bodyMedium),
-              ],
-            ],
-          ),
+          child: useInlineDesktopHeader
+              ? Row(
+                  children: [
+                    Flexible(
+                      fit: FlexFit.loose,
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.headlineSmall,
+                      ),
+                    ),
+                    if (subtitle != null && subtitle!.isNotEmpty) ...[
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Text(
+                          subtitle!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(color: JojoColors.muted),
+                        ),
+                      ),
+                    ],
+                  ],
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: Theme.of(context).textTheme.headlineMedium),
+                    if (subtitle != null && subtitle!.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(subtitle!, style: Theme.of(context).textTheme.bodyMedium),
+                    ],
+                  ],
+                ),
         ),
         // ignore: use_null_aware_elements
         if (trailing != null) trailing!,

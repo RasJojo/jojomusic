@@ -1,4 +1,5 @@
 from collections import Counter, OrderedDict
+import asyncio
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -35,7 +36,12 @@ async def build_recommendations(
     lastfm_provider: LastFmProvider,
     limit: int = 20,
 ) -> list[TrackPayload]:
-    liked_rows = db.scalars(select(SavedTrack).where(SavedTrack.user_id == user.id)).all()
+    liked_rows = db.scalars(
+        select(SavedTrack)
+        .where(SavedTrack.user_id == user.id)
+        .order_by(SavedTrack.created_at.desc())
+        .limit(64)
+    ).all()
     history_rows = db.scalars(
         select(PlaybackEvent)
         .where(PlaybackEvent.user_id == user.id)
@@ -76,31 +82,58 @@ async def build_recommendations(
 
     if lastfm_provider.enabled:
         seed_tracks = [
-            *[TrackPayload.model_validate(row.track_payload) for row in liked_rows[:3]],
+            *[TrackPayload.model_validate(row.track_payload) for row in liked_rows[:2]],
             *[
                 TrackPayload.model_validate(row.track_payload)
                 for row in history_rows
                 if row.event_type in {"play_started", "track_completed"}
-            ][:3],
+            ][:2],
         ]
-        for seed in seed_tracks:
-            for track in await lastfm_provider.similar_tracks(seed.artist, seed.title, limit=8):
+        similar_batches = await asyncio.gather(
+            *[
+                lastfm_provider.similar_tracks(seed.artist, seed.title, limit=6)
+                for seed in seed_tracks
+            ],
+            return_exceptions=True,
+        )
+        for batch in similar_batches:
+            if isinstance(batch, Exception):
+                continue
+            for track in batch:
                 if track.track_key in excluded_keys or track.track_key in track_map:
                     continue
                 track_map[track.track_key] = track
                 if len(track_map) >= limit:
                     return list(track_map.values())
 
-    for artist, _ in artist_weights.most_common(3):
+    top_artists = [artist for artist, _ in artist_weights.most_common(2)]
+    lastfm_artist_batches: list[list[TrackPayload]] = []
+    provider_artist_batches: list[list[TrackPayload]] = []
+    if top_artists:
         if lastfm_provider.enabled:
-            for track in await lastfm_provider.top_tracks_for_artist(artist, limit=8):
-                if track.track_key in excluded_keys or track.track_key in track_map:
-                    continue
-                track_map[track.track_key] = track
-                if len(track_map) >= limit:
-                    return list(track_map.values())
+            batches = await asyncio.gather(
+                *[
+                    lastfm_provider.top_tracks_for_artist(artist, limit=6)
+                    for artist in top_artists
+                ],
+                return_exceptions=True,
+            )
+            lastfm_artist_batches = [
+                batch for batch in batches if not isinstance(batch, Exception)
+            ]
+        batches = await asyncio.gather(
+            *[
+                provider.top_for_artist(artist, limit=8)
+                for artist in top_artists
+            ],
+            return_exceptions=True,
+        )
+        provider_artist_batches = [
+            batch for batch in batches if not isinstance(batch, Exception)
+        ]
 
-        for track in await provider.top_for_artist(artist, limit=12):
+    for batch in [*lastfm_artist_batches, *provider_artist_batches]:
+        for track in batch:
             if track.track_key in excluded_keys or track.track_key in track_map:
                 continue
             track_map[track.track_key] = track
@@ -115,6 +148,7 @@ async def build_generated_playlists(
     user: User,
     provider: ITunesProvider,
     lastfm_provider: LastFmProvider,
+    recommendations_seed: list[TrackPayload] | None = None,
 ) -> list[GeneratedPlaylistPayload]:
     liked_rows = db.scalars(
         select(SavedTrack)
@@ -130,13 +164,15 @@ async def build_generated_playlists(
 
     liked_tracks = [TrackPayload.model_validate(row.track_payload) for row in liked_rows]
     history_tracks = [TrackPayload.model_validate(row.track_payload) for row in history_rows]
-    recommendations = await build_recommendations(
-        db=db,
-        user=user,
-        provider=provider,
-        lastfm_provider=lastfm_provider,
-        limit=24,
-    )
+    recommendations = recommendations_seed
+    if recommendations is None:
+        recommendations = await build_recommendations(
+            db=db,
+            user=user,
+            provider=provider,
+            lastfm_provider=lastfm_provider,
+            limit=24,
+        )
     excluded_keys = {
         *[track.track_key for track in liked_tracks],
         *[track.track_key for track in history_tracks],
@@ -170,11 +206,21 @@ async def build_generated_playlists(
     top_artist_names = [artist for artist, _ in top_artists.most_common(2)]
 
     for index, artist in enumerate(top_artist_names, start=1):
-        artist_tracks = await provider.top_for_artist(artist, limit=12)
-        if lastfm_provider.enabled:
-            artist_tracks = _dedupe_payload_tracks(
-                [*await lastfm_provider.top_tracks_for_artist(artist, limit=8), *artist_tracks]
-            )[:12]
+        local_artist_tracks = _dedupe_payload_tracks(
+            [
+                *[track for track in liked_tracks if track.artist == artist],
+                *[track for track in history_tracks if track.artist == artist],
+                *[track for track in recommendations if track.artist == artist],
+            ]
+        )[:12]
+        artist_tracks = local_artist_tracks
+        if len(artist_tracks) < 8:
+            fetched_tracks = await provider.top_for_artist(artist, limit=8)
+            if lastfm_provider.enabled:
+                fetched_tracks = _dedupe_payload_tracks(
+                    [*await lastfm_provider.top_tracks_for_artist(artist, limit=6), *fetched_tracks]
+                )[:12]
+            artist_tracks = _dedupe_payload_tracks([*artist_tracks, *fetched_tracks])[:12]
         if artist_tracks:
             playlists.append(
                 GeneratedPlaylistPayload(
@@ -188,11 +234,20 @@ async def build_generated_playlists(
 
     if top_artist_names:
         artist = top_artist_names[0]
-        artist_tracks = await provider.top_for_artist(artist, limit=12)
-        if lastfm_provider.enabled:
-            artist_tracks = _dedupe_payload_tracks(
-                [*await lastfm_provider.top_tracks_for_artist(artist, limit=8), *artist_tracks]
-            )[:12]
+        artist_tracks = _dedupe_payload_tracks(
+            [
+                *[track for track in recommendations if track.artist == artist],
+                *[track for track in liked_tracks if track.artist == artist],
+                *[track for track in history_tracks if track.artist == artist],
+            ]
+        )[:12]
+        if len(artist_tracks) < 8:
+            fetched_tracks = await provider.top_for_artist(artist, limit=8)
+            if lastfm_provider.enabled:
+                fetched_tracks = _dedupe_payload_tracks(
+                    [*await lastfm_provider.top_tracks_for_artist(artist, limit=6), *fetched_tracks]
+                )[:12]
+            artist_tracks = _dedupe_payload_tracks([*artist_tracks, *fetched_tracks])[:12]
         if artist_tracks:
             playlists.append(
                 GeneratedPlaylistPayload(
@@ -251,6 +306,67 @@ async def build_generated_playlists(
             )
 
     return playlists[:5]
+
+
+async def build_similar_tracks(
+    *,
+    seed_track: TrackPayload,
+    provider: ITunesProvider,
+    lastfm_provider: LastFmProvider,
+    exclude_keys: set[str] | None = None,
+    limit: int = 12,
+) -> list[TrackPayload]:
+    excluded = set(exclude_keys or set())
+    excluded.add(seed_track.track_key)
+    track_map: "OrderedDict[str, TrackPayload]" = OrderedDict()
+
+    if lastfm_provider.enabled:
+        for track in await lastfm_provider.similar_tracks(
+            seed_track.artist,
+            seed_track.title,
+            limit=max(limit * 2, 10),
+        ):
+            if track.track_key in excluded or track.track_key in track_map:
+                continue
+            track_map[track.track_key] = track
+            if len(track_map) >= limit:
+                return list(track_map.values())
+
+    for track in await provider.top_for_artist(
+        seed_track.artist,
+        limit=max(limit * 2, 10),
+    ):
+        if track.track_key in excluded or track.track_key in track_map:
+            continue
+        track_map[track.track_key] = track
+        if len(track_map) >= limit:
+            return list(track_map.values())
+
+    if lastfm_provider.enabled:
+        for track in await lastfm_provider.top_tracks_for_artist(
+            seed_track.artist,
+            limit=max(limit, 8),
+        ):
+            if track.track_key in excluded or track.track_key in track_map:
+                continue
+            track_map[track.track_key] = track
+            if len(track_map) >= limit:
+                return list(track_map.values())
+
+    search_queries = [
+        f"{seed_track.artist} {seed_track.title}",
+        seed_track.artist,
+        seed_track.title,
+    ]
+    for query in search_queries:
+        for track in await provider.search_tracks(query, limit=max(limit * 2, 12)):
+            if track.track_key in excluded or track.track_key in track_map:
+                continue
+            track_map[track.track_key] = track
+            if len(track_map) >= limit:
+                return list(track_map.values())
+
+    return list(track_map.values())[:limit]
 
 
 async def _editorial_tracks(

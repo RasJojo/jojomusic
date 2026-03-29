@@ -6,9 +6,10 @@ import '../models/app_models.dart';
 import '../state/downloads_controller.dart';
 import '../state/library_controller.dart';
 import '../state/player_controller.dart';
+import 'profile_screen.dart';
 import 'theme/jojo_theme.dart';
 import 'widgets/jojo_surfaces.dart';
-import 'widgets/shell_bottom_bar.dart';
+import 'widgets/shell_chrome.dart';
 
 class PlaylistScreen extends ConsumerWidget {
   const PlaylistScreen({required this.playlistId, super.key});
@@ -21,9 +22,10 @@ class PlaylistScreen extends ConsumerWidget {
     final downloadedPlaylistIds = ref.watch(downloadedPlaylistIdsProvider);
     final downloads = ref.watch(downloadsProvider);
 
-    return JojoPageScaffold(
+    return ShellChrome(
       topColor: const Color(0xFF183437),
-      bottomNavigationBar: const ShellBottomBar(popToRootOnNavigate: true),
+      popToRootOnNavigate: true,
+      onProfilePressed: () => openProfileScreen(context),
       child: library.when(
         data: (data) {
           final isFavoritesPlaylist = playlistId == favoritesPlaylistId;

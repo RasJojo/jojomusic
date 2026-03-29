@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -40,15 +41,17 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       final sharedPreferences = await SharedPreferences.getInstance();
       final environment = AppEnvironment.fromPlatform();
       final database = AppDatabase();
-      final audioHandler = await AudioService.init(
-        builder: () =>
-            JojoAudioHandler(environment: environment, database: database),
-        config: const AudioServiceConfig(
-          androidNotificationChannelId: 'com.jojomusic.playback',
-          androidNotificationChannelName: 'JojoMusique Playback',
-          androidNotificationOngoing: true,
-        ),
-      );
+      final audioHandler = kIsWeb
+          ? JojoAudioHandler(environment: environment, database: database)
+          : await AudioService.init(
+              builder: () =>
+                  JojoAudioHandler(environment: environment, database: database),
+              config: const AudioServiceConfig(
+                androidNotificationChannelId: 'com.jojomusic.playback',
+                androidNotificationChannelName: 'JojoMusique Playback',
+                androidNotificationOngoing: true,
+              ),
+            );
       return _BootstrapData(
         sharedPreferences: sharedPreferences,
         environment: environment,

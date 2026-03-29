@@ -3,10 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/app_models.dart';
 import '../state/discovery_controller.dart';
+import '../state/library_controller.dart';
 import '../state/player_controller.dart';
+import 'profile_screen.dart';
 import 'widgets/jojo_surfaces.dart';
 import 'widgets/media_artwork.dart';
-import 'widgets/shell_bottom_bar.dart';
+import 'widgets/shell_chrome.dart';
 
 class PodcastScreen extends ConsumerWidget {
   const PodcastScreen({required this.podcast, super.key});
@@ -16,10 +18,12 @@ class PodcastScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final details = ref.watch(podcastDetailsProvider(podcast.podcastKey));
+    final library = ref.watch(libraryControllerProvider).asData?.value;
 
-    return JojoPageScaffold(
+    return ShellChrome(
       topColor: const Color(0xFF331925),
-      bottomNavigationBar: const ShellBottomBar(popToRootOnNavigate: true),
+      popToRootOnNavigate: true,
+      onProfilePressed: () => openProfileScreen(context),
       child: details.when(
         data: (data) => ListView(
           padding: const EdgeInsets.fromLTRB(18, 16, 18, 148),
@@ -45,6 +49,23 @@ class PodcastScreen extends ConsumerWidget {
                 data.podcast.publisher,
                 if ((data.podcast.episodeCount ?? data.episodes.length) > 0)
                   '${data.podcast.episodeCount ?? data.episodes.length} épisodes',
+              ],
+              actions: [
+                FilledButton.icon(
+                  onPressed: () => ref
+                      .read(libraryControllerProvider.notifier)
+                      .togglePodcastFollow(data.podcast),
+                  icon: Icon(
+                    library?.isPodcastFollowed(data.podcast) ?? false
+                        ? Icons.check_rounded
+                        : Icons.add_rounded,
+                  ),
+                  label: Text(
+                    library?.isPodcastFollowed(data.podcast) ?? false
+                        ? 'Suivi'
+                        : 'Suivre',
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 22),

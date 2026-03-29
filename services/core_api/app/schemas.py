@@ -143,6 +143,12 @@ class ResolveTrackRequest(BaseModel):
     query: str | None = None
 
 
+class SimilarTracksRequest(BaseModel):
+    track: TrackPayload
+    limit: int = 12
+    exclude_track_keys: list[str] = Field(default_factory=list)
+
+
 class ResolvedStream(BaseModel):
     stream_url: str
     webpage_url: str | None = None

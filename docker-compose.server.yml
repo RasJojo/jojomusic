@@ -19,11 +19,45 @@ services:
     environment:
       RESOLVER_TIMEOUT_SECONDS: ${RESOLVER_TIMEOUT_SECONDS:-25}
 
+  media-worker:
+    build:
+      context: ./services/media_worker
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-jojomusic}:${POSTGRES_PASSWORD:-jojomusic}@postgres:5432/${POSTGRES_DB:-jojomusic}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      MEDIA_QUEUE_KEY: ${MEDIA_QUEUE_KEY:-media:ingest}
+      MEDIA_CACHE_DIR: ${MEDIA_CACHE_DIR:-/data/audio_cache}
+      IMAGE_QUEUE_KEY: ${IMAGE_QUEUE_KEY:-image:ingest}
+      IMAGE_CACHE_DIR: ${IMAGE_CACHE_DIR:-/data/image_cache}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      resolver-api:
+        condition: service_started
+    volumes:
+      - audio_cache:/data/audio_cache
+      - image_cache:/data/image_cache
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.15
+    environment:
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_MASTER_KEY: ${MEILISEARCH_API_KEY:-jojomusic-server-key}
+    volumes:
+      - meilisearch_data:/meili_data
+
   core-api:
     build:
-      context: ./services/core_api
+      context: ./services/core_api_nest
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jojomusic}:${POSTGRES_PASSWORD:-jojomusic}@postgres:5432/${POSTGRES_DB:-jojomusic}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-jojomusic}:${POSTGRES_PASSWORD:-jojomusic}@postgres:5432/${POSTGRES_DB:-jojomusic}
       JWT_SECRET: ${JWT_SECRET}
       RESOLVER_API_URL: http://resolver-api:8000
       LASTFM_API_KEY: ${LASTFM_API_KEY:-}
@@ -33,13 +67,35 @@ services:
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
       SPOTIFY_REDIRECT_URI: ${SPOTIFY_REDIRECT_URI:-}
       GENIUS_ACCESS_TOKEN: ${GENIUS_ACCESS_TOKEN:-}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      MEILISEARCH_URL: ${MEILISEARCH_URL:-http://meilisearch:7700}
+      MEILISEARCH_API_KEY: ${MEILISEARCH_API_KEY:-jojomusic-server-key}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://jojomusicapi.jojoserv.com}
+      MEDIA_CACHE_DIR: ${MEDIA_CACHE_DIR:-/data/audio_cache}
+      MEDIA_QUEUE_KEY: ${MEDIA_QUEUE_KEY:-media:ingest}
+      IMAGE_CACHE_DIR: ${IMAGE_CACHE_DIR:-/data/image_cache}
+      IMAGE_QUEUE_KEY: ${IMAGE_QUEUE_KEY:-image:ingest}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://jojomusic-web.vercel.app,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8877,http://127.0.0.1:8877}
     depends_on:
       postgres:
         condition: service_healthy
       resolver-api:
         condition: service_started
+      media-worker:
+        condition: service_started
+      redis:
+        condition: service_started
+      meilisearch:
+        condition: service_started
     ports:
       - "${PUBLIC_API_BIND:-127.0.0.1}:${PUBLIC_API_PORT:-18000}:8000"
+    volumes:
+      - audio_cache:/data/audio_cache
+      - image_cache:/data/image_cache
 
 volumes:
   postgres_data:
+  redis_data:
+  meilisearch_data:
+  audio_cache:
+  image_cache:

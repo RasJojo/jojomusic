@@ -1,15 +1,17 @@
 import 'dart:math' as math;
 
+import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../models/app_models.dart';
-import '../../state/downloads_controller.dart';
 import '../../state/library_controller.dart';
 import '../../state/player_controller.dart';
+import '../lyrics_screen.dart';
+import '../queue_screen.dart';
 import '../theme/jojo_theme.dart';
 import 'jojo_surfaces.dart';
 import 'media_artwork.dart';
+import 'track_playlist_picker_sheet.dart';
 
 class MiniPlayerBar extends ConsumerWidget {
   const MiniPlayerBar({super.key});
@@ -18,22 +20,18 @@ class MiniPlayerBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final mediaItem = ref.watch(currentMediaItemProvider);
     final playbackState = ref.watch(playbackStateProvider);
+    final library = ref.watch(libraryControllerProvider).asData?.value;
 
     if (mediaItem.asData?.value == null) {
       return const SizedBox.shrink();
     }
 
     final item = mediaItem.asData!.value!;
+    final currentTrack = ref.read(playerControllerProvider).currentQueueTrack();
     final isPlaying = playbackState.asData?.value.playing ?? false;
-    final progress = (() {
-      final duration = item.duration?.inMilliseconds ?? 0;
-      final position =
-          playbackState.asData?.value.updatePosition.inMilliseconds ?? 0;
-      if (duration <= 0) {
-        return 0.0;
-      }
-      return (position / duration).clamp(0.0, 1.0);
-    })();
+    final isLiked =
+        library?.likes.any((track) => track.trackKey == mediaItemTrackKey(item)) ??
+        false;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
@@ -59,6 +57,7 @@ class MiniPlayerBar extends ConsumerWidget {
           onTap: () => showModalBottomSheet<void>(
             context: context,
             isScrollControlled: true,
+            useRootNavigator: true,
             showDragHandle: true,
             backgroundColor: JojoColors.surface,
             builder: (context) => const _PlayerSheet(),
@@ -75,18 +74,6 @@ class MiniPlayerBar extends ConsumerWidget {
                 return Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(999),
-                      child: LinearProgressIndicator(
-                        value: progress,
-                        minHeight: 3,
-                        backgroundColor: Colors.white.withValues(alpha: 0.08),
-                        valueColor: const AlwaysStoppedAnimation<Color>(
-                          JojoColors.primary,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
                     Row(
                       children: [
                         MediaArtwork(
@@ -118,11 +105,17 @@ class MiniPlayerBar extends ConsumerWidget {
                         ),
                         IconButton(
                           visualDensity: VisualDensity.compact,
-                          onPressed: () =>
-                              ref.read(playerControllerProvider).skipPrevious(),
+                          onPressed: currentTrack == null
+                              ? null
+                              : () => ref
+                                    .read(libraryControllerProvider.notifier)
+                                    .toggleLike(currentTrack),
                           icon: Icon(
-                            Icons.skip_previous_rounded,
+                            isLiked
+                                ? Icons.favorite_rounded
+                                : Icons.favorite_border_rounded,
                             size: iconSize,
+                            color: isLiked ? const Color(0xFFFF6B8E) : null,
                           ),
                         ),
                         Container(
@@ -147,12 +140,15 @@ class MiniPlayerBar extends ConsumerWidget {
                         ),
                         IconButton(
                           visualDensity: VisualDensity.compact,
-                          onPressed: () =>
-                              ref.read(playerControllerProvider).skipNext(),
-                          icon: Icon(
-                            Icons.skip_next_rounded,
-                            size: iconSize,
-                          ),
+                          onPressed: currentTrack == null
+                              ? null
+                              : () => showTrackPlaylistPickerSheet(
+                                  context,
+                                  ref,
+                                  track: currentTrack,
+                                  preferDownloaded: true,
+                                ),
+                          icon: Icon(Icons.add_rounded, size: iconSize),
                         ),
                       ],
                     ),
@@ -167,6 +163,391 @@ class MiniPlayerBar extends ConsumerWidget {
   }
 }
 
+class DesktopPlayerPanel extends ConsumerStatefulWidget {
+  const DesktopPlayerPanel({
+    super.key,
+    this.width = 340,
+  });
+
+  final double width;
+
+  @override
+  ConsumerState<DesktopPlayerPanel> createState() => _DesktopPlayerPanelState();
+}
+
+class _DesktopPlayerPanelState extends ConsumerState<DesktopPlayerPanel> {
+  double? _dragValueMs;
+  bool _openingLyrics = false;
+  bool _openingQueue = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final mediaItem = ref.watch(currentMediaItemProvider).asData?.value;
+    final playback = ref.watch(playbackStateProvider).asData?.value;
+    final queue = ref.watch(currentQueueProvider).asData?.value ?? const [];
+    final currentTrack = ref.read(playerControllerProvider).currentQueueTrack();
+    final library = ref.watch(libraryControllerProvider).asData?.value;
+
+    return Container(
+      width: widget.width,
+      decoration: const BoxDecoration(
+        color: Color(0xB3071213),
+        border: Border(right: BorderSide(color: Color(0x1FFFFFFF))),
+      ),
+      child: SafeArea(
+        right: false,
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+          child: mediaItem == null || playback == null
+              ? const _DesktopPlayerPlaceholder()
+              : LayoutBuilder(
+                  builder: (context, constraints) {
+                    final maxMs = (mediaItem.duration?.inMilliseconds ?? 1)
+                        .clamp(1, 1 << 31);
+                    final currentMs = playback.updatePosition.inMilliseconds
+                        .clamp(0, maxMs);
+                    final sliderValue = (_dragValueMs ?? currentMs.toDouble())
+                        .clamp(0.0, maxMs.toDouble())
+                        .toDouble();
+                    final isLiked =
+                        currentTrack != null &&
+                        (library?.isLiked(currentTrack) ?? false);
+                    final artworkSize = math.min(
+                      constraints.maxWidth - 40,
+                      constraints.maxHeight > 920 ? 288.0 : 248.0,
+                    );
+
+                    return ListView(
+                      padding: EdgeInsets.zero,
+                      children: [
+                        Text(
+                          'Lecture en cours',
+                          style: Theme.of(context).textTheme.labelLarge
+                              ?.copyWith(
+                                color: JojoColors.mutedStrong,
+                                letterSpacing: 0.2,
+                              ),
+                        ),
+                        const SizedBox(height: 14),
+                        JojoSurfaceCard(
+                          padding: const EdgeInsets.all(18),
+                          child: Column(
+                            children: [
+                              MediaArtwork(
+                                url: mediaItem.artUri?.toString(),
+                                size: artworkSize,
+                                borderRadius: 30,
+                              ),
+                              const SizedBox(height: 18),
+                              Text(
+                                mediaItem.title,
+                                style: Theme.of(context).textTheme.headlineSmall,
+                                textAlign: TextAlign.center,
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                mediaItem.artist ?? '',
+                                style: Theme.of(context).textTheme.titleMedium
+                                    ?.copyWith(color: JojoColors.mutedStrong),
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        JojoSurfaceCard(
+                          child: Column(
+                            children: [
+                              Slider(
+                                value: sliderValue,
+                                max: maxMs.toDouble(),
+                                onChanged: (value) =>
+                                    setState(() => _dragValueMs = value),
+                                onChangeEnd: (value) async {
+                                  setState(() => _dragValueMs = null);
+                                  await ref
+                                      .read(playerControllerProvider)
+                                      .seek(
+                                        Duration(milliseconds: value.round()),
+                                      );
+                                },
+                              ),
+                              Row(
+                                children: [
+                                  Text(
+                                    _formatDuration(
+                                      Duration(
+                                        milliseconds: sliderValue.round(),
+                                      ),
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Text(
+                                    _formatDuration(
+                                      Duration(milliseconds: maxMs),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  _DesktopIconButton(
+                                    icon: Icons.replay_rounded,
+                                    onPressed: () => ref
+                                        .read(playerControllerProvider)
+                                        .seekRelative(
+                                          const Duration(seconds: -15),
+                                        ),
+                                  ),
+                                  _DesktopIconButton(
+                                    icon: Icons.skip_previous_rounded,
+                                    onPressed: () => ref
+                                        .read(playerControllerProvider)
+                                        .skipPrevious(),
+                                  ),
+                                  Container(
+                                    width: 68,
+                                    height: 68,
+                                    decoration: const BoxDecoration(
+                                      color: JojoColors.primary,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: IconButton(
+                                      onPressed: () => ref
+                                          .read(playerControllerProvider)
+                                          .togglePlayPause(),
+                                      icon: Icon(
+                                        playback.playing
+                                            ? Icons.pause_rounded
+                                            : Icons.play_arrow_rounded,
+                                        size: 36,
+                                      ),
+                                      color: Colors.black,
+                                    ),
+                                  ),
+                                  _DesktopIconButton(
+                                    icon: Icons.skip_next_rounded,
+                                    onPressed: () => ref
+                                        .read(playerControllerProvider)
+                                        .skipNext(),
+                                  ),
+                                  _DesktopIconButton(
+                                    icon: Icons.forward_rounded,
+                                    onPressed: () => ref
+                                        .read(playerControllerProvider)
+                                        .seekRelative(
+                                          const Duration(seconds: 15),
+                                        ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        JojoSurfaceCard(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Actions',
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 12),
+                              Wrap(
+                                spacing: 10,
+                                runSpacing: 10,
+                                children: [
+                                  FilledButton.tonalIcon(
+                                    onPressed: currentTrack == null
+                                        ? null
+                                        : () => ref
+                                              .read(
+                                                libraryControllerProvider
+                                                    .notifier,
+                                              )
+                                              .toggleLike(currentTrack),
+                                    icon: Icon(
+                                      isLiked
+                                          ? Icons.favorite_rounded
+                                          : Icons.favorite_border_rounded,
+                                      color: isLiked
+                                          ? const Color(0xFFFF6B8E)
+                                          : null,
+                                    ),
+                                    label: Text(isLiked ? 'Liké' : 'Liker'),
+                                  ),
+                                  FilledButton.tonalIcon(
+                                    onPressed: currentTrack == null
+                                        ? null
+                                        : () => showTrackPlaylistPickerSheet(
+                                            context,
+                                            ref,
+                                            track: currentTrack,
+                                            preferDownloaded: true,
+                                          ),
+                                    icon: const Icon(
+                                      Icons.playlist_add_rounded,
+                                    ),
+                                    label: const Text('Ajouter'),
+                                  ),
+                                  FilledButton.tonalIcon(
+                                    onPressed: _openingQueue
+                                        ? null
+                                        : () => _openQueuePage(context),
+                                    icon: const Icon(
+                                      Icons.queue_music_rounded,
+                                    ),
+                                    label: const Text('File d’attente'),
+                                  ),
+                                  FilledButton.tonalIcon(
+                                    onPressed: _openingLyrics
+                                        ? null
+                                        : () => _openLyricsPage(
+                                            context,
+                                            mediaItem,
+                                          ),
+                                    icon: _openingLyrics
+                                        ? const SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2.2,
+                                            ),
+                                          )
+                                        : const Icon(Icons.lyrics_outlined),
+                                    label: const Text('Paroles'),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                currentTrack == null
+                                    ? 'Épisode ou source directe • ajout playlist indisponible'
+                                    : '${queue.length} titres dans la file • la lecture continue automatiquement',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openLyricsPage(
+    BuildContext context,
+    MediaItem mediaItem,
+  ) async {
+    if (_openingLyrics) {
+      return;
+    }
+    setState(() => _openingLyrics = true);
+    try {
+      await Navigator.of(context, rootNavigator: true).push(
+        MaterialPageRoute<void>(
+          builder: (_) => LyricsScreen(mediaItem: mediaItem),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _openingLyrics = false);
+      }
+    }
+  }
+
+  Future<void> _openQueuePage(BuildContext context) async {
+    if (_openingQueue) {
+      return;
+    }
+    setState(() => _openingQueue = true);
+    try {
+      await Navigator.of(context, rootNavigator: true).push(
+        MaterialPageRoute<void>(builder: (_) => const QueueScreen()),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _openingQueue = false);
+      }
+    }
+  }
+}
+
+class _DesktopPlayerPlaceholder extends StatelessWidget {
+  const _DesktopPlayerPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return JojoSurfaceCard(
+      padding: const EdgeInsets.fromLTRB(18, 22, 18, 22),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 54,
+            height: 54,
+            decoration: BoxDecoration(
+              color: JojoColors.surfaceBright,
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: const Icon(
+              Icons.graphic_eq_rounded,
+              color: JojoColors.primary,
+              size: 28,
+            ),
+          ),
+          const SizedBox(height: 18),
+          Text(
+            'Lance un titre',
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Sur grand écran, le lecteur reste ici en permanence pour garder la navigation et les paroles visibles en même temps.',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DesktopIconButton extends StatelessWidget {
+  const _DesktopIconButton({
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkResponse(
+      onTap: onPressed,
+      radius: 28,
+      child: Container(
+        width: 52,
+        height: 52,
+        decoration: BoxDecoration(
+          color: JojoColors.surfaceBright,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0x1FFFFFFF)),
+        ),
+        child: Icon(icon, color: JojoColors.text, size: 28),
+      ),
+    );
+  }
+}
+
 class _PlayerSheet extends ConsumerStatefulWidget {
   const _PlayerSheet();
 
@@ -176,6 +557,8 @@ class _PlayerSheet extends ConsumerStatefulWidget {
 
 class _PlayerSheetState extends ConsumerState<_PlayerSheet> {
   double? _dragValueMs;
+  bool _openingLyrics = false;
+  bool _openingQueue = false;
 
   @override
   Widget build(BuildContext context) {
@@ -184,9 +567,6 @@ class _PlayerSheetState extends ConsumerState<_PlayerSheet> {
     final queue = ref.watch(currentQueueProvider).asData?.value ?? const [];
     final currentTrack = ref.read(playerControllerProvider).currentQueueTrack();
     final library = ref.watch(libraryControllerProvider).asData?.value;
-    final downloadedPlaylistIds =
-        ref.watch(downloadedPlaylistIdsProvider).asData?.value ??
-        const <String>{};
 
     if (mediaItem == null || playback == null) {
       return const SizedBox(height: 240);
@@ -198,9 +578,7 @@ class _PlayerSheetState extends ConsumerState<_PlayerSheet> {
         .clamp(0.0, maxMs.toDouble())
         .toDouble();
     final isLiked =
-        currentTrack != null &&
-        (library?.likes.any((item) => item.trackKey == currentTrack.trackKey) ??
-            false);
+        currentTrack != null && (library?.isLiked(currentTrack) ?? false);
 
     return Container(
       decoration: const BoxDecoration(
@@ -217,7 +595,9 @@ class _PlayerSheetState extends ConsumerState<_PlayerSheet> {
             final compactWidth = constraints.maxWidth < 430;
             final compactHeight = constraints.maxHeight < 780;
             final artworkSize = math.min(
-              compactWidth ? constraints.maxWidth * 0.56 : constraints.maxWidth * 0.62,
+              compactWidth
+                  ? constraints.maxWidth * 0.56
+                  : constraints.maxWidth * 0.62,
               compactHeight ? 220.0 : 280.0,
             );
             final horizontalPadding = compactWidth ? 14.0 : 20.0;
@@ -235,226 +615,189 @@ class _PlayerSheetState extends ConsumerState<_PlayerSheet> {
               ),
               child: Column(
                 children: [
-              JojoSurfaceCard(
-                padding: const EdgeInsets.all(18),
-                child: Column(
-                  children: [
-                    MediaArtwork(
-                      url: mediaItem.artUri?.toString(),
-                      size: artworkSize,
-                      borderRadius: 28,
-                    ),
-                    SizedBox(height: compactHeight ? 16 : 22),
-                    Text(
-                      mediaItem.title,
-                      style: Theme.of(context).textTheme.headlineSmall,
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      mediaItem.artist ?? '',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: JojoColors.mutedStrong,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-              ),
-              SizedBox(height: cardSpacing),
-              JojoSurfaceCard(
-                child: Column(
-                  children: [
-                    Slider(
-                      value: sliderValue,
-                      max: maxMs.toDouble(),
-                      onChanged: (value) =>
-                          setState(() => _dragValueMs = value),
-                      onChangeEnd: (value) async {
-                        setState(() => _dragValueMs = null);
-                        await ref
-                            .read(playerControllerProvider)
-                            .seek(Duration(milliseconds: value.round()));
-                      },
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: Row(
-                        children: [
-                          Text(
-                            _formatDuration(
-                              Duration(milliseconds: sliderValue.round()),
-                            ),
-                          ),
-                          const Spacer(),
-                          Text(_formatDuration(Duration(milliseconds: maxMs))),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Wrap(
-                      alignment: WrapAlignment.center,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      spacing: compactWidth ? 6 : 10,
-                      runSpacing: 10,
+                  JojoSurfaceCard(
+                    padding: const EdgeInsets.all(18),
+                    child: Column(
                       children: [
-                        _SeekRelativeButton(
-                          width: seekButtonWidth,
-                          label: '-15 s',
-                          icon: Icons.replay_rounded,
-                          onPressed: () => ref
-                              .read(playerControllerProvider)
-                              .seekRelative(const Duration(seconds: -15)),
+                        MediaArtwork(
+                          url: mediaItem.artUri?.toString(),
+                          size: artworkSize,
+                          borderRadius: 28,
                         ),
-                        IconButton(
-                          onPressed: () =>
-                              ref.read(playerControllerProvider).skipPrevious(),
-                          iconSize: iconSize,
-                          icon: const Icon(Icons.skip_previous_rounded),
+                        SizedBox(height: compactHeight ? 16 : 22),
+                        Text(
+                          mediaItem.title,
+                          style: Theme.of(context).textTheme.headlineSmall,
+                          textAlign: TextAlign.center,
                         ),
-                        Container(
-                          decoration: const BoxDecoration(
-                            color: JojoColors.primary,
-                            shape: BoxShape.circle,
-                          ),
-                          child: IconButton(
-                            onPressed: () => ref
+                        const SizedBox(height: 8),
+                        Text(
+                          mediaItem.artist ?? '',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(color: JojoColors.mutedStrong),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(height: cardSpacing),
+                  JojoSurfaceCard(
+                    child: Column(
+                      children: [
+                        Slider(
+                          value: sliderValue,
+                          max: maxMs.toDouble(),
+                          onChanged: (value) =>
+                              setState(() => _dragValueMs = value),
+                          onChangeEnd: (value) async {
+                            setState(() => _dragValueMs = null);
+                            await ref
                                 .read(playerControllerProvider)
-                                .togglePlayPause(),
-                            iconSize: playIconSize,
-                            color: Colors.black,
-                            icon: Icon(
-                              playback.playing
-                                  ? Icons.pause_rounded
-                                  : Icons.play_arrow_rounded,
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: () =>
-                              ref.read(playerControllerProvider).skipNext(),
-                          iconSize: iconSize,
-                          icon: const Icon(Icons.skip_next_rounded),
-                        ),
-                        _SeekRelativeButton(
-                          width: seekButtonWidth,
-                          label: '+15 s',
-                          icon: Icons.forward_rounded,
-                          onPressed: () => ref
-                              .read(playerControllerProvider)
-                              .seekRelative(const Duration(seconds: 15)),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 10,
-                      children: [
-                        FilledButton.tonalIcon(
-                          onPressed: currentTrack == null
-                              ? null
-                              : () => ref
-                                    .read(libraryControllerProvider.notifier)
-                                    .toggleLike(currentTrack),
-                          icon: Icon(
-                            isLiked
-                                ? Icons.favorite_rounded
-                                : Icons.favorite_border_rounded,
-                          ),
-                          label: Text(isLiked ? 'Liké' : 'Liker'),
-                        ),
-                        FilledButton.tonalIcon(
-                          onPressed: currentTrack == null
-                              ? null
-                              : () => _showPlaylistPicker(
-                                  context,
-                                  track: currentTrack,
-                                  playlists: library?.playlists ?? const [],
-                                  downloadedPlaylistIds: downloadedPlaylistIds,
-                                  preferDownloaded: false,
-                                ),
-                          icon: const Icon(Icons.playlist_add_rounded),
-                          label: const Text('Ajouter'),
-                        ),
-                        FilledButton.tonalIcon(
-                          onPressed: _showLyricsSheet,
-                          icon: const Icon(Icons.lyrics_outlined),
-                          label: const Text('Paroles'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: Text(
-                        currentTrack == null
-                            ? 'Épisode ou source directe • actions playlist indisponibles'
-                            : '${queue.length} titres dans la file',
-                        style: Theme.of(context).textTheme.bodySmall,
-                        textAlign: TextAlign.right,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              SizedBox(height: cardSpacing),
-              Expanded(
-                child: JojoSurfaceCard(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'File d’attente',
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      const SizedBox(height: 10),
-                      Expanded(
-                        child: ListView.separated(
-                          itemCount: queue.length,
-                          separatorBuilder: (context, index) =>
-                              const SizedBox(height: 10),
-                          itemBuilder: (context, index) {
-                            final item = queue[index];
-                            final isCurrent = index == playback.queueIndex;
-                            return ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              leading: MediaArtwork(
-                                url: item.artUri?.toString(),
-                                size: 52,
-                                borderRadius: 16,
-                              ),
-                              title: Text(
-                                item.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: isCurrent
-                                    ? Theme.of(context).textTheme.titleSmall
-                                          ?.copyWith(color: JojoColors.primary)
-                                    : null,
-                              ),
-                              subtitle: Text(
-                                item.artist ?? '',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              trailing: isCurrent
-                                  ? const Icon(
-                                      Icons.graphic_eq_rounded,
-                                      color: JojoColors.primary,
-                                    )
-                                  : null,
-                              onTap: () => ref
-                                  .read(playerControllerProvider)
-                                  .playQueueItem(index),
-                            );
+                                .seek(Duration(milliseconds: value.round()));
                           },
                         ),
-                      ),
-                    ],
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          child: Row(
+                            children: [
+                              Text(
+                                _formatDuration(
+                                  Duration(milliseconds: sliderValue.round()),
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(_formatDuration(Duration(milliseconds: maxMs))),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: compactWidth ? 6 : 10,
+                          runSpacing: 10,
+                          children: [
+                            _SeekRelativeButton(
+                              width: seekButtonWidth,
+                              label: '-15 s',
+                              icon: Icons.replay_rounded,
+                              onPressed: () => ref
+                                  .read(playerControllerProvider)
+                                  .seekRelative(const Duration(seconds: -15)),
+                            ),
+                            IconButton(
+                              onPressed: () => ref
+                                  .read(playerControllerProvider)
+                                  .skipPrevious(),
+                              iconSize: iconSize,
+                              icon: const Icon(Icons.skip_previous_rounded),
+                            ),
+                            Container(
+                              decoration: const BoxDecoration(
+                                color: JojoColors.primary,
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                onPressed: () => ref
+                                    .read(playerControllerProvider)
+                                    .togglePlayPause(),
+                                iconSize: playIconSize,
+                                color: Colors.black,
+                                icon: Icon(
+                                  playback.playing
+                                      ? Icons.pause_rounded
+                                      : Icons.play_arrow_rounded,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              onPressed: () => ref
+                                  .read(playerControllerProvider)
+                                  .skipNext(),
+                              iconSize: iconSize,
+                              icon: const Icon(Icons.skip_next_rounded),
+                            ),
+                            _SeekRelativeButton(
+                              width: seekButtonWidth,
+                              label: '+15 s',
+                              icon: Icons.forward_rounded,
+                              onPressed: () => ref
+                                  .read(playerControllerProvider)
+                                  .seekRelative(const Duration(seconds: 15)),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            FilledButton.tonalIcon(
+                              onPressed: currentTrack == null
+                                  ? null
+                                  : () => ref
+                                        .read(libraryControllerProvider.notifier)
+                                        .toggleLike(currentTrack),
+                              icon: Icon(
+                                isLiked
+                                    ? Icons.favorite_rounded
+                                    : Icons.favorite_border_rounded,
+                                color: isLiked
+                                    ? const Color(0xFFFF6B8E)
+                                    : null,
+                              ),
+                              label: Text(isLiked ? 'Liké' : 'Liker'),
+                            ),
+                            FilledButton.tonalIcon(
+                              onPressed: currentTrack == null
+                                  ? null
+                                  : () => showTrackPlaylistPickerSheet(
+                                      context,
+                                      ref,
+                                      track: currentTrack,
+                                      preferDownloaded: true,
+                                    ),
+                              icon: const Icon(Icons.playlist_add_rounded),
+                              label: const Text('Ajouter'),
+                            ),
+                            FilledButton.tonalIcon(
+                              onPressed: _openingQueue
+                                  ? null
+                                  : () => _openQueuePage(context),
+                              icon: const Icon(Icons.queue_music_rounded),
+                              label: const Text('File d’attente'),
+                            ),
+                            FilledButton.tonalIcon(
+                              onPressed: _openingLyrics
+                                  ? null
+                                  : () => _openLyricsPage(context, mediaItem),
+                              icon: _openingLyrics
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2.2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.lyrics_outlined),
+                              label: const Text('Paroles'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text(
+                            currentTrack == null
+                                ? 'Épisode ou source directe • playlists indisponibles'
+                                : '${queue.length} titres dans la file • la lecture se prolonge automatiquement',
+                            style: Theme.of(context).textTheme.bodySmall,
+                            textAlign: TextAlign.right,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ),
                 ],
               ),
             );
@@ -464,163 +807,41 @@ class _PlayerSheetState extends ConsumerState<_PlayerSheet> {
     );
   }
 
-  Future<void> _showLyricsSheet() async {
-    final lyrics = await ref
-        .read(playerControllerProvider)
-        .fetchLyricsForCurrentTrack();
-    if (!mounted) {
+  Future<void> _openLyricsPage(
+    BuildContext context,
+    MediaItem mediaItem,
+  ) async {
+    if (_openingLyrics) {
       return;
     }
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (context) {
-        return Padding(
-          padding: EdgeInsets.fromLTRB(
-            20,
-            12,
-            20,
-            MediaQuery.of(context).padding.bottom + 20,
-          ),
-          child: SingleChildScrollView(
-            child: Text(lyrics?.plainLyrics ?? 'Aucune parole trouvée.'),
-          ),
-        );
-      },
-    );
+    setState(() => _openingLyrics = true);
+    try {
+      await Navigator.of(context, rootNavigator: true).push(
+        MaterialPageRoute<void>(
+          builder: (_) => LyricsScreen(mediaItem: mediaItem),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _openingLyrics = false);
+      }
+    }
   }
 
-  Future<void> _showPlaylistPicker(
-    BuildContext context, {
-    required Track track,
-    required List<Playlist> playlists,
-    required Set<String> downloadedPlaylistIds,
-    required bool preferDownloaded,
-  }) async {
-    final sortedPlaylists = [...playlists]
-      ..sort((left, right) {
-        final leftDownloaded = downloadedPlaylistIds.contains(left.id);
-        final rightDownloaded = downloadedPlaylistIds.contains(right.id);
-        if (preferDownloaded && leftDownloaded != rightDownloaded) {
-          return leftDownloaded ? -1 : 1;
-        }
-        return left.name.toLowerCase().compareTo(right.name.toLowerCase());
-      });
-
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) {
-        return SafeArea(
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.add_circle_outline_rounded),
-                title: const Text('Nouvelle playlist'),
-                subtitle: const Text(
-                  'Crée une playlist puis ajoute immédiatement ce titre.',
-                ),
-                onTap: () async {
-                  Navigator.of(context).pop();
-                  await _showCreatePlaylistDialog(track);
-                },
-              ),
-              if (sortedPlaylists.isEmpty)
-                const ListTile(
-                  leading: Icon(Icons.queue_music_rounded),
-                  title: Text('Aucune playlist pour le moment'),
-                  subtitle: Text(
-                    'Crée-en une, puis active le hors ligne depuis la page playlist.',
-                  ),
-                )
-              else
-                ...sortedPlaylists.map(
-                  (playlist) => ListTile(
-                    leading: Icon(
-                      downloadedPlaylistIds.contains(playlist.id)
-                          ? Icons.download_done_rounded
-                          : Icons.playlist_add_rounded,
-                    ),
-                    title: Text(playlist.name),
-                    subtitle: Text(
-                      downloadedPlaylistIds.contains(playlist.id)
-                          ? 'Playlist hors ligne • ajout = téléchargement auto'
-                          : 'Playlist standard',
-                    ),
-                    onTap: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      Navigator.of(context).pop();
-                      await ref
-                          .read(libraryControllerProvider.notifier)
-                          .addToPlaylist(playlistId: playlist.id, track: track);
-                      if (!mounted) {
-                        return;
-                      }
-                      messenger.showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            downloadedPlaylistIds.contains(playlist.id)
-                                ? 'Ajouté à ${playlist.name}. Téléchargement hors ligne lancé.'
-                                : 'Ajouté à ${playlist.name}.',
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _showCreatePlaylistDialog(Track track) async {
-    final controller = TextEditingController();
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Nouvelle playlist'),
-          content: TextField(
-            controller: controller,
-            decoration: const InputDecoration(
-              labelText: 'Nom',
-              hintText: 'Par exemple: Nuit, Mada offline, Rap FR',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Annuler'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final messenger = ScaffoldMessenger.of(context);
-                final name = controller.text.trim();
-                if (name.isEmpty) {
-                  return;
-                }
-                Navigator.of(context).pop();
-                await ref
-                    .read(libraryControllerProvider.notifier)
-                    .createPlaylistWithTrack(name: name, track: track);
-                if (!mounted) {
-                  return;
-                }
-                messenger.showSnackBar(
-                  SnackBar(content: Text('$name créée et titre ajouté.')),
-                );
-              },
-              child: const Text('Créer'),
-            ),
-          ],
-        );
-      },
-    );
-    controller.dispose();
+  Future<void> _openQueuePage(BuildContext context) async {
+    if (_openingQueue) {
+      return;
+    }
+    setState(() => _openingQueue = true);
+    try {
+      await Navigator.of(context, rootNavigator: true).push(
+        MaterialPageRoute<void>(builder: (_) => const QueueScreen()),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _openingQueue = false);
+      }
+    }
   }
 }
 
