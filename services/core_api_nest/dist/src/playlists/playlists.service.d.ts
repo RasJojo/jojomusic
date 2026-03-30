@@ -1,7 +1,7 @@
 import type { User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MusicService } from '../music/music.service';
-import { PlaylistCreateDto, PlaylistTrackCreateDto } from './dto/playlists.dto';
+import { PlaylistCreateDto, PlaylistTrackCreateDto, PlaylistUpdateDto } from './dto/playlists.dto';
 export declare class PlaylistsService {
     private readonly prisma;
     private readonly musicService;
@@ -22,6 +22,21 @@ export declare class PlaylistsService {
         }[];
     }[]>;
     create(user: User, payload: PlaylistCreateDto): Promise<{
+        id: string;
+        name: string;
+        description: string;
+        artwork_url: string | null;
+        created_at: Date;
+        updated_at: Date;
+        tracks: {
+            id: string;
+            track_key: string;
+            position: number;
+            track_payload: Record<string, unknown>;
+            created_at: Date;
+        }[];
+    }>;
+    update(user: User, playlistId: string, payload: PlaylistUpdateDto): Promise<{
         id: string;
         name: string;
         description: string;

@@ -167,6 +167,22 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     return playlist;
   }
 
+  Future<Playlist> renamePlaylist({
+    required String playlistId,
+    required String name,
+    String? description,
+  }) async {
+    final playlist = await ref
+        .read(apiProvider)
+        .updatePlaylist(
+          playlistId: playlistId,
+          name: name,
+          description: description,
+        );
+    await refresh();
+    return playlist;
+  }
+
   Future<void> addToPlaylist({
     required String playlistId,
     required Track track,

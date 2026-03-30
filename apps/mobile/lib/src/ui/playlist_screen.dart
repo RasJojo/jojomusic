@@ -94,13 +94,27 @@ class PlaylistScreen extends ConsumerWidget {
                 ),
                 trailing: isFavoritesPlaylist
                     ? null
-                    : JojoIconButton(
-                        icon: Icons.delete_outline_rounded,
-                        onPressed: () => _confirmDeletePlaylist(
-                          context,
-                          ref,
-                          currentPlaylist,
-                        ),
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          JojoIconButton(
+                            icon: Icons.edit_outlined,
+                            onPressed: () => _showEditPlaylistDialog(
+                              context,
+                              ref,
+                              currentPlaylist,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          JojoIconButton(
+                            icon: Icons.delete_outline_rounded,
+                            onPressed: () => _confirmDeletePlaylist(
+                              context,
+                              ref,
+                              currentPlaylist,
+                            ),
+                          ),
+                        ],
                       ),
               ),
               const SizedBox(height: 18),
@@ -393,11 +407,105 @@ class PlaylistScreen extends ConsumerWidget {
       return;
     }
 
-    await ref
-        .read(libraryControllerProvider.notifier)
-        .deletePlaylist(playlist.id);
+    try {
+      await ref
+          .read(libraryControllerProvider.notifier)
+          .deletePlaylist(playlist.id);
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Impossible de supprimer la playlist: $error'),
+        ),
+      );
+      return;
+    }
     if (context.mounted) {
       Navigator.of(context).pop();
+    }
+  }
+
+  Future<void> _showEditPlaylistDialog(
+    BuildContext context,
+    WidgetRef ref,
+    Playlist playlist,
+  ) async {
+    final nameController = TextEditingController(text: playlist.name);
+    final descriptionController = TextEditingController(
+      text: playlist.description,
+    );
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('Modifier la playlist'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Nom',
+                  ),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: descriptionController,
+                  minLines: 2,
+                  maxLines: 4,
+                  decoration: const InputDecoration(
+                    labelText: 'Description',
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Annuler'),
+              ),
+              FilledButton(
+                onPressed: () async {
+                  final trimmedName = nameController.text.trim();
+                  if (trimmedName.isEmpty) {
+                    return;
+                  }
+                  try {
+                    await ref
+                        .read(libraryControllerProvider.notifier)
+                        .renamePlaylist(
+                          playlistId: playlist.id,
+                          name: trimmedName,
+                          description: descriptionController.text.trim(),
+                        );
+                    if (dialogContext.mounted) {
+                      Navigator.of(dialogContext).pop();
+                    }
+                  } catch (error) {
+                    if (!dialogContext.mounted) {
+                      return;
+                    }
+                    ScaffoldMessenger.of(dialogContext).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          'Impossible de modifier la playlist: $error',
+                        ),
+                      ),
+                    );
+                  }
+                },
+                child: const Text('Enregistrer'),
+              ),
+            ],
+          );
+        },
+      );
+    } finally {
+      nameController.dispose();
+      descriptionController.dispose();
     }
   }
 }

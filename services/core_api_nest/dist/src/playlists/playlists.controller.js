@@ -29,6 +29,9 @@ let PlaylistsController = class PlaylistsController {
     create(user, payload) {
         return this.playlistsService.create(user, payload);
     }
+    update(user, playlistId, payload) {
+        return this.playlistsService.update(user, playlistId, payload);
+    }
     addTrack(user, playlistId, payload) {
         return this.playlistsService.addTrack(user, playlistId, payload);
     }
@@ -55,6 +58,15 @@ __decorate([
     __metadata("design:paramtypes", [Object, playlists_dto_1.PlaylistCreateDto]),
     __metadata("design:returntype", void 0)
 ], PlaylistsController.prototype, "create", null);
+__decorate([
+    (0, common_1.Patch)(':playlistId'),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __param(1, (0, common_1.Param)('playlistId')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, playlists_dto_1.PlaylistUpdateDto]),
+    __metadata("design:returntype", void 0)
+], PlaylistsController.prototype, "update", null);
 __decorate([
     (0, common_1.Post)(':playlistId/tracks'),
     __param(0, (0, current_user_decorator_1.CurrentUser)()),

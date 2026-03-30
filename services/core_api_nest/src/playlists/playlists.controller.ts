@@ -1,8 +1,12 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import type { User } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
-import { PlaylistCreateDto, PlaylistTrackCreateDto } from './dto/playlists.dto';
+import {
+  PlaylistCreateDto,
+  PlaylistTrackCreateDto,
+  PlaylistUpdateDto,
+} from './dto/playlists.dto';
 import { PlaylistsService } from './playlists.service';
 
 @Controller('api/v1/playlists')
@@ -18,6 +22,15 @@ export class PlaylistsController {
   @Post()
   create(@CurrentUser() user: User, @Body() payload: PlaylistCreateDto) {
     return this.playlistsService.create(user, payload);
+  }
+
+  @Patch(':playlistId')
+  update(
+    @CurrentUser() user: User,
+    @Param('playlistId') playlistId: string,
+    @Body() payload: PlaylistUpdateDto,
+  ) {
+    return this.playlistsService.update(user, playlistId, payload);
   }
 
   @Post(':playlistId/tracks')

@@ -755,11 +755,21 @@ class _SearchResultsContent extends StatelessWidget {
       );
     }
 
+    final rankedPodcasts = [...result.podcasts]..sort(
+      (left, right) =>
+          _podcastPriorityScore(result.query, right) -
+          _podcastPriorityScore(result.query, left),
+    );
     final topArtist = result.artists.isNotEmpty ? result.artists.first : null;
-    final topPodcast = result.podcasts.isNotEmpty ? result.podcasts.first : null;
+    final topPodcast = rankedPodcasts.isNotEmpty ? rankedPodcasts.first : null;
     final prioritizePodcasts =
         topPodcast != null &&
         _podcastPriorityScore(result.query, topPodcast) >=
+            _artistPriorityScore(result.query, topArtist);
+    final strongPodcastIntent =
+        topPodcast != null &&
+        _podcastPriorityScore(result.query, topPodcast) >= 2800 &&
+        _podcastPriorityScore(result.query, topPodcast) >
             _artistPriorityScore(result.query, topArtist);
 
     return Column(
@@ -813,14 +823,16 @@ class _SearchResultsContent extends StatelessWidget {
           const SizedBox(height: 20),
         ],
         if (prioritizePodcasts) ...[
-          if (result.podcasts.isNotEmpty)
+          if (rankedPodcasts.isNotEmpty)
             _PodcastResultsSection(
-              podcasts: result.podcasts,
+              podcasts: rankedPodcasts,
               onPodcastSelected: onPodcastSelected,
             ),
-          if (result.podcasts.isNotEmpty && result.artists.isNotEmpty)
+          if (!strongPodcastIntent &&
+              rankedPodcasts.isNotEmpty &&
+              result.artists.isNotEmpty)
             const SizedBox(height: 18),
-          if (result.artists.isNotEmpty)
+          if (!strongPodcastIntent && result.artists.isNotEmpty)
             _ArtistResultsSection(
               artists: result.artists,
               onArtistSelected: onArtistSelected,
@@ -833,16 +845,17 @@ class _SearchResultsContent extends StatelessWidget {
             ),
           if (result.artists.isNotEmpty && result.podcasts.isNotEmpty)
             const SizedBox(height: 18),
-          if (result.podcasts.isNotEmpty)
+          if (rankedPodcasts.isNotEmpty)
             _PodcastResultsSection(
-              podcasts: result.podcasts,
+              podcasts: rankedPodcasts,
               onPodcastSelected: onPodcastSelected,
             ),
         ],
-        if ((result.artists.isNotEmpty || result.podcasts.isNotEmpty) &&
+        if (!strongPodcastIntent &&
+            (result.artists.isNotEmpty || rankedPodcasts.isNotEmpty) &&
             result.tracks.isNotEmpty)
           const SizedBox(height: 18),
-        if (result.tracks.isNotEmpty)
+        if (!strongPodcastIntent && result.tracks.isNotEmpty)
           _TrackSection(
             title: 'Titres phares',
             subtitle:
@@ -850,16 +863,20 @@ class _SearchResultsContent extends StatelessWidget {
             tracks: result.tracks,
             onTrackAction: onTrackAction,
           ),
-        if (result.tracks.isNotEmpty && result.albums.isNotEmpty)
+        if (!strongPodcastIntent &&
+            result.tracks.isNotEmpty &&
+            result.albums.isNotEmpty)
           const SizedBox(height: 18),
-        if (result.albums.isNotEmpty)
+        if (!strongPodcastIntent && result.albums.isNotEmpty)
           _AlbumResultsSection(
             albums: result.albums,
             onAlbumSelected: onAlbumSelected,
           ),
-        if (result.albums.isNotEmpty && playlists.isNotEmpty)
+        if (!strongPodcastIntent &&
+            result.albums.isNotEmpty &&
+            playlists.isNotEmpty)
           const SizedBox(height: 18),
-        if (playlists.isNotEmpty)
+        if (!strongPodcastIntent && playlists.isNotEmpty)
           _PlaylistResultsSection(
             playlists: playlists,
             onPlaylistSelected: onPlaylistSelected,
