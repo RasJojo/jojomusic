@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/session_controller.dart';
 import 'theme/jojo_theme.dart';
+import 'widgets/jojo_logo.dart';
 import 'widgets/jojo_surfaces.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -95,10 +96,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               color: JojoColors.primary.withValues(alpha: 0.14),
               borderRadius: BorderRadius.circular(18),
             ),
-            child: const Icon(
-              Icons.graphic_eq_rounded,
-              color: JojoColors.primary,
-              size: 32,
+            child: const Padding(
+              padding: EdgeInsets.all(8),
+              child: JojoLogo(size: 40, borderRadius: 14),
             ),
           ),
           const SizedBox(height: 24),
