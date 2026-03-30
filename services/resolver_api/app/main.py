@@ -33,6 +33,27 @@ class ResolveResponse(BaseModel):
     source: str = "youtube"
 
 
+class SearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=300)
+    limit: int = Field(default=6, ge=1, le=12)
+
+
+class SearchCandidate(BaseModel):
+    title: str
+    artist: str
+    webpage_url: str | None = None
+    thumbnail_url: str | None = None
+    duration_ms: int | None = None
+    youtube_rank: int
+    score: float
+    source: str = "youtube"
+
+
+class SearchResponse(BaseModel):
+    query: str
+    results: list[SearchCandidate]
+
+
 _NEGATIVE_HINTS = (
     "karaoke",
     "instrumental",
@@ -91,6 +112,29 @@ def _candidate_score(query: str, entry: dict) -> float:
     return score
 
 
+def _is_viable_candidate(query: str, entry: dict) -> bool:
+    if not entry or not entry.get("url"):
+        return False
+
+    title = _normalize_text(entry.get("title") or "")
+    artist = _normalize_text(entry.get("artist") or entry.get("uploader") or "")
+    combined = f"{artist} {title}".strip()
+    if not combined:
+        return False
+
+    query_text = _normalize_text(query)
+    score = _candidate_score(query, entry)
+    overlap = _token_overlap_score(query, combined)
+
+    if score >= 0.58:
+        return True
+    if overlap >= 0.55:
+        return True
+    if query_text and query_text in combined:
+        return True
+    return False
+
+
 def _pick_best_entry(query: str, info: dict) -> dict:
     entries = info["entries"] if "entries" in info else [info]
     candidates = [entry for entry in entries if entry and entry.get("url")]
@@ -100,6 +144,48 @@ def _pick_best_entry(query: str, info: dict) -> dict:
             detail="No stream found",
         )
     return max(candidates, key=lambda entry: _candidate_score(query, entry))
+
+
+def search_candidates(query: str, limit: int) -> SearchResponse:
+    options = {
+        "quiet": True,
+        "noplaylist": True,
+        "socket_timeout": settings.resolver_timeout_seconds,
+        "extract_flat": False,
+        "ignoreerrors": True,
+    }
+    search_size = max(limit + 2, 8)
+    with YoutubeDL(options) as ydl:
+        info = ydl.extract_info(f"ytsearch{search_size}:{query}", download=False)
+
+    entries = info["entries"] if "entries" in info else [info]
+    candidates: list[SearchCandidate] = []
+    for index, entry in enumerate(entries):
+        if not _is_viable_candidate(query, entry):
+            continue
+        artist = entry.get("artist") or entry.get("uploader") or "Unknown artist"
+        duration = entry.get("duration")
+        candidates.append(
+            SearchCandidate(
+                title=entry.get("title") or query,
+                artist=artist,
+                webpage_url=entry.get("webpage_url"),
+                thumbnail_url=entry.get("thumbnail"),
+                duration_ms=duration * 1000 if duration else None,
+                youtube_rank=index,
+                score=round(_candidate_score(query, entry), 4),
+            )
+        )
+        if len(candidates) >= limit:
+            break
+
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No search results found",
+        )
+
+    return SearchResponse(query=query, results=candidates)
 
 
 def extract_stream(query: str) -> ResolveResponse:
@@ -137,6 +223,16 @@ def health() -> dict:
 def resolve(payload: ResolveRequest) -> ResolveResponse:
     try:
         return extract_stream(payload.query)
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/search", response_model=SearchResponse)
+def search(payload: SearchRequest) -> SearchResponse:
+    try:
+        return search_candidates(payload.query, payload.limit)
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover
