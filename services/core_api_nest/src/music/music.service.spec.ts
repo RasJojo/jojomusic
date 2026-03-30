@@ -1,6 +1,7 @@
 import { MusicService } from './music.service';
 import {
   ArtistPayload,
+  PodcastPayload,
   SearchResponse,
   buildArtistKey,
   makeTrackPayload,
@@ -116,5 +117,60 @@ describe('MusicService exact-title youtube fallback', () => {
     expect(
       service.shouldUseYoutubeSearchFallback('D-FULL PARTY 2015 Music Video', tracks, []),
     ).toBe(true);
+  });
+
+  it('maps podcast episodes safely when XML fields are objects with attributes', () => {
+    const podcast: PodcastPayload = {
+      podcast_key: '1612444837',
+      title: 'Zack en Roue Libre by Zack Nani',
+      publisher: 'Zack Nani',
+      description: null,
+      artwork_url: 'https://example.com/show.jpg',
+      feed_url: 'https://example.com/feed.xml',
+      external_url: 'https://example.com',
+      episode_count: 10,
+      release_date: new Date('2026-03-25T11:22:00.000Z'),
+    };
+
+    const episodes = service.mapPodcastEpisodes(
+      podcast,
+      [
+        {
+          guid: {
+            '#text':
+              '9ffecc30-b8a3-4ea5-bcb9-488a1b61e47c',
+            isPermaLink: 'false',
+          },
+          title: 'Episode 1',
+          description: '<p>Bonjour &amp; bienvenue</p>',
+          enclosure: { url: 'https://cdn.example.com/episode.mp3' },
+          'itunes:duration': '01:29:44',
+          pubDate: 'Wed, 25 Mar 2026 11:22:00 GMT',
+          'itunes:image': {
+            href: 'https://cdn.example.com/episode.jpg',
+          },
+        },
+      ],
+      16,
+    );
+
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]?.episode_key).toBe(
+      '1612444837-9ffecc30-b8a3-4ea5-bcb9-488a1b61e47c',
+    );
+    expect(episodes[0]?.title).toBe('Episode 1');
+    expect(episodes[0]?.description).toBe('Bonjour & bienvenue');
+    expect(episodes[0]?.audio_url).toBe('https://cdn.example.com/episode.mp3');
+    expect(episodes[0]?.artwork_url).toBe('https://cdn.example.com/episode.jpg');
+    expect(episodes[0]?.duration_seconds).toBe(5384);
+  });
+
+  it('extracts xml text from nested attribute objects', () => {
+    expect(
+      service.xmlText({
+        '#text': 'Lock In',
+        lang: 'fr',
+      }),
+    ).toBe('Lock In');
   });
 });

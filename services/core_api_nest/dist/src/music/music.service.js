@@ -46,6 +46,7 @@ let MusicService = class MusicService {
     xmlParser = new fast_xml_parser_1.XMLParser({
         ignoreAttributes: false,
         attributeNamePrefix: '',
+        processEntities: false,
     });
     constructor(appConfig, redisCache, searchIndex, prisma) {
         this.appConfig = appConfig;
@@ -954,22 +955,46 @@ let MusicService = class MusicService {
         if (!xml) {
             return [];
         }
-        const parsed = this.xmlParser.parse(xml);
+        let parsed;
+        try {
+            parsed = this.xmlParser.parse(xml);
+        }
+        catch {
+            return [];
+        }
         const channel = parsed?.rss?.channel ?? parsed?.feed;
         const rawItems = this.asList(channel?.item ?? channel?.entry);
+        return this.mapPodcastEpisodes(podcast, rawItems, limit);
+    }
+    mapPodcastEpisodes(podcast, rawItems, limit = 16) {
         return rawItems.slice(0, limit).map((item, index) => {
             const enclosure = item.enclosure ?? {};
-            const image = item['itunes:image']?.href ?? item.image?.url ?? podcast.artwork_url ?? null;
+            const image = this.xmlText(item['itunes:image']?.href) ??
+                this.xmlText(item['itunes:image']) ??
+                this.xmlText(item.image?.url) ??
+                this.xmlText(item.image) ??
+                podcast.artwork_url ??
+                null;
+            const guidSeed = this.xmlText(item.guid) ??
+                this.xmlText(item.id) ??
+                this.xmlText(item.title) ??
+                `${index}`;
+            const description = this.xmlText(item['content:encoded']) ?? this.xmlText(item.description);
+            const externalUrl = this.xmlText(item.link?.href) ?? this.xmlText(item.link) ?? null;
+            const durationValue = item['itunes:duration'];
+            const duration = typeof durationValue === 'number'
+                ? this.parseDuration(durationValue)
+                : this.parseDuration(this.xmlText(durationValue));
             return {
-                episode_key: `${podcast.podcast_key}-${(0, payloads_1.normalizeValue)(item.guid ?? item.id ?? item.title ?? `${index}`)}`,
+                episode_key: `${podcast.podcast_key}-${(0, payloads_1.normalizeValue)(guidSeed)}`,
                 podcast_title: podcast.title,
-                title: item.title ?? `Episode ${index + 1}`,
+                title: this.xmlText(item.title) ?? `Episode ${index + 1}`,
                 publisher: podcast.publisher,
-                description: this.stripHtml(item['content:encoded'] ?? item.description ?? null),
+                description: this.stripHtml(description),
                 artwork_url: image,
-                audio_url: enclosure.url ?? null,
-                external_url: item.link?.href ?? item.link ?? null,
-                duration_seconds: this.parseDuration(item['itunes:duration'] ?? null),
+                audio_url: this.xmlText(enclosure.url) ?? null,
+                external_url: externalUrl,
+                duration_seconds: duration,
                 published_at: this.parseDate(item.pubDate ?? item.published ?? item.updated),
             };
         });
@@ -1971,6 +1996,36 @@ let MusicService = class MusicService {
             .replace(/&gt;/g, '>')
             .trim();
         return text || null;
+    }
+    xmlText(value) {
+        if (value == null) {
+            return null;
+        }
+        if (typeof value === 'string') {
+            return value.trim() || null;
+        }
+        if (typeof value === 'number' || typeof value === 'boolean') {
+            return `${value}`;
+        }
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                const text = this.xmlText(item);
+                if (text) {
+                    return text;
+                }
+            }
+            return null;
+        }
+        if (typeof value === 'object') {
+            const record = value;
+            for (const key of ['#text', 'text', 'value', 'url', 'href']) {
+                const text = this.xmlText(record[key]);
+                if (text) {
+                    return text;
+                }
+            }
+        }
+        return null;
     }
     htmlToTextWithBreaks(value) {
         return this.stripHtml(value) ?? '';
