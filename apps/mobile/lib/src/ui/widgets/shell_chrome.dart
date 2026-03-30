@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../state/providers.dart';
 import '../../state/session_controller.dart';
 import '../theme/jojo_theme.dart';
+import 'jojo_logo.dart';
 import 'jojo_surfaces.dart';
 import 'mini_player_bar.dart';
 import 'shell_bottom_bar.dart';
@@ -150,16 +151,35 @@ class _ProfileShortcutButton extends ConsumerWidget {
           child: Tooltip(
             message: tooltip,
             child: Center(
-              child: CircleAvatar(
-                radius: compact ? 14 : 17,
-                backgroundColor: JojoColors.primary.withValues(alpha: 0.18),
-                child: Text(
-                  initial.toUpperCase(),
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    color: JojoColors.primary,
-                    fontWeight: FontWeight.w900,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  JojoLogo(
+                    size: compact ? 26 : 30,
+                    borderRadius: compact ? 9 : 10,
                   ),
-                ),
+                  Positioned(
+                    right: -2,
+                    bottom: -3,
+                    child: Container(
+                      width: compact ? 18 : 20,
+                      height: compact ? 18 : 20,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF102021),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: const Color(0x1FFFFFFF)),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        initial.toUpperCase(),
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: JojoColors.text,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -234,18 +254,12 @@ class _ShellSideRail extends ConsumerWidget {
                   height: 52,
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(18),
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFF61F5B9), Color(0xFF1ED48F)],
-                    ),
                   ),
-                  child: const Icon(
-                    Icons.graphic_eq_rounded,
-                    color: Colors.black,
-                  ),
+                  child: const JojoLogo(size: 52, borderRadius: 18),
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  'Jojo',
+                  'JojoMusique',
                   style: Theme.of(context).textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.w900,
                   ),
