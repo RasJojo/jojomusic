@@ -756,11 +756,39 @@ class _SearchResultsContent extends StatelessWidget {
     }
 
     final topArtist = result.artists.isNotEmpty ? result.artists.first : null;
+    final topPodcast = result.podcasts.isNotEmpty ? result.podcasts.first : null;
+    final prioritizePodcasts =
+        topPodcast != null &&
+        _podcastPriorityScore(result.query, topPodcast) >=
+            _artistPriorityScore(result.query, topArtist);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (topArtist != null) ...[
+        if (prioritizePodcasts) ...[
+          JojoHeroPanel(
+            label: 'Meilleur résultat',
+            title: topPodcast.title,
+            subtitle: topPodcast.description?.isNotEmpty == true
+                ? topPodcast.description!
+                : 'Podcast • ouvre la page pour voir les épisodes récents.',
+            artworkUrl: topPodcast.artworkUrl,
+            accentColor: const Color(0xFF3A1A2D),
+            metadata: [
+              topPodcast.publisher,
+              if ((topPodcast.episodeCount ?? 0) > 0)
+                '${topPodcast.episodeCount} épisodes',
+            ],
+            actions: [
+              FilledButton.icon(
+                onPressed: () => onPodcastSelected(topPodcast),
+                icon: const Icon(Icons.podcasts_rounded),
+                label: const Text('Ouvrir le podcast'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+        ] else if (topArtist != null) ...[
           JojoHeroPanel(
             label: 'Meilleur résultat',
             title: topArtist.name,
@@ -784,18 +812,33 @@ class _SearchResultsContent extends StatelessWidget {
           ),
           const SizedBox(height: 20),
         ],
-        if (result.artists.isNotEmpty)
-          _ArtistResultsSection(
-            artists: result.artists,
-            onArtistSelected: onArtistSelected,
-          ),
-        if (result.artists.isNotEmpty && result.podcasts.isNotEmpty)
-          const SizedBox(height: 18),
-        if (result.podcasts.isNotEmpty)
-          _PodcastResultsSection(
-            podcasts: result.podcasts,
-            onPodcastSelected: onPodcastSelected,
-          ),
+        if (prioritizePodcasts) ...[
+          if (result.podcasts.isNotEmpty)
+            _PodcastResultsSection(
+              podcasts: result.podcasts,
+              onPodcastSelected: onPodcastSelected,
+            ),
+          if (result.podcasts.isNotEmpty && result.artists.isNotEmpty)
+            const SizedBox(height: 18),
+          if (result.artists.isNotEmpty)
+            _ArtistResultsSection(
+              artists: result.artists,
+              onArtistSelected: onArtistSelected,
+            ),
+        ] else ...[
+          if (result.artists.isNotEmpty)
+            _ArtistResultsSection(
+              artists: result.artists,
+              onArtistSelected: onArtistSelected,
+            ),
+          if (result.artists.isNotEmpty && result.podcasts.isNotEmpty)
+            const SizedBox(height: 18),
+          if (result.podcasts.isNotEmpty)
+            _PodcastResultsSection(
+              podcasts: result.podcasts,
+              onPodcastSelected: onPodcastSelected,
+            ),
+        ],
         if ((result.artists.isNotEmpty || result.podcasts.isNotEmpty) &&
             result.tracks.isNotEmpty)
           const SizedBox(height: 18),
@@ -823,6 +866,39 @@ class _SearchResultsContent extends StatelessWidget {
           ),
       ],
     );
+  }
+
+  int _artistPriorityScore(String query, Artist? artist) {
+    if (artist == null) {
+      return 0;
+    }
+    return _searchPriorityScore(query, artist.name);
+  }
+
+  int _podcastPriorityScore(String query, Podcast podcast) {
+    final titleScore = _searchPriorityScore(query, podcast.title);
+    final publisherScore = _searchPriorityScore(query, podcast.publisher);
+    return titleScore + (publisherScore ~/ 3);
+  }
+
+  int _searchPriorityScore(String query, String value) {
+    final normalizedQuery = _normalizeSearchValue(query);
+    final normalizedValue = _normalizeSearchValue(value);
+    final compactQuery = normalizedQuery.replaceAll(' ', '');
+    final compactValue = normalizedValue.replaceAll(' ', '');
+
+    if (normalizedValue == normalizedQuery || compactValue == compactQuery) {
+      return 4000;
+    }
+    if (normalizedValue.startsWith(normalizedQuery) ||
+        compactValue.startsWith(compactQuery)) {
+      return 2800;
+    }
+    if (normalizedValue.contains(normalizedQuery) ||
+        compactValue.contains(compactQuery)) {
+      return 2200;
+    }
+    return 0;
   }
 }
 

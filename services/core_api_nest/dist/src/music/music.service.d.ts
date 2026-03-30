@@ -72,6 +72,7 @@ export declare class MusicService {
     private itunesSearch;
     private lookupPodcast;
     private podcastEpisodes;
+    private mapPodcastEpisodes;
     private lastfm;
     private resolveThumbnail;
     private readyAssetArtworkByTrackKey;
@@ -135,6 +136,7 @@ export declare class MusicService {
     private isPlaceholderImage;
     private stripLastfmSummary;
     private stripHtml;
+    private xmlText;
     private htmlToTextWithBreaks;
     private sanitizeGeniusLyrics;
     private sanitizeTononkiraLyrics;
