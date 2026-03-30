@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PlaylistTrackCreateDto = exports.PlaylistCreateDto = void 0;
+exports.PlaylistTrackCreateDto = exports.PlaylistUpdateDto = exports.PlaylistCreateDto = void 0;
 const class_validator_1 = require("class-validator");
 class PlaylistCreateDto {
     name;
@@ -33,6 +33,29 @@ __decorate([
     (0, class_validator_1.IsString)(),
     __metadata("design:type", String)
 ], PlaylistCreateDto.prototype, "artwork_url", void 0);
+class PlaylistUpdateDto {
+    name;
+    description;
+    artwork_url;
+}
+exports.PlaylistUpdateDto = PlaylistUpdateDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(1),
+    (0, class_validator_1.MaxLength)(120),
+    __metadata("design:type", String)
+], PlaylistUpdateDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], PlaylistUpdateDto.prototype, "description", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], PlaylistUpdateDto.prototype, "artwork_url", void 0);
 class PlaylistTrackCreateDto {
     track;
 }

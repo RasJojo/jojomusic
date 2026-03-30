@@ -44,6 +44,35 @@ let PlaylistsService = class PlaylistsService {
         });
         return this.toPlaylistOut(await this.hydratePlaylistVisuals(playlist));
     }
+    async update(user, playlistId, payload) {
+        const playlist = await this.prisma.playlist.findFirst({
+            where: { id: playlistId, userId: user.id },
+            include: { tracks: { orderBy: { position: 'asc' } } },
+        });
+        if (!playlist) {
+            throw new common_1.NotFoundException('Playlist not found');
+        }
+        const data = {
+            updatedAt: new Date(),
+        };
+        if (payload.name != null) {
+            data.name = payload.name.trim();
+        }
+        if (payload.description != null) {
+            data.description = payload.description.trim();
+        }
+        if (payload.artwork_url != null) {
+            data.artworkUrl = payload.artwork_url.trim() || null;
+        }
+        const updated = await this.prisma.playlist.update({
+            where: { id: playlist.id },
+            data,
+            include: { tracks: { orderBy: { position: 'asc' } } },
+        });
+        const hydrated = await this.hydratePlaylistVisuals(updated);
+        void this.musicService.primeAudioAssets(this.trackPayloads(hydrated.tracks), 6);
+        return this.toPlaylistOut(hydrated);
+    }
     async addTrack(user, playlistId, payload) {
         const playlist = await this.prisma.playlist.findFirst({
             where: { id: playlistId, userId: user.id },

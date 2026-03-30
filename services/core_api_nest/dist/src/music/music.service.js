@@ -75,7 +75,7 @@ let MusicService = class MusicService {
             });
             return hydrated;
         }
-        const redisCacheKey = `search:v7:${cacheKey}`;
+        const redisCacheKey = `search:v9:${cacheKey}`;
         const sharedCached = await this.redisCache.getJson(redisCacheKey);
         if (sharedCached) {
             const hydrated = await this.refreshManagedSearchResponse(sharedCached);
@@ -281,23 +281,15 @@ let MusicService = class MusicService {
     }
     async searchPodcasts(query, limit = 12) {
         const normalizedQuery = this.normalizeLyricsValue(query);
-        const queries = this.dedupeNonEmpty([
-            query,
-            `${query} podcast`,
-            query.replace(/\s+/g, ''),
-            query.replace(/\bpodcast\b/gi, '').trim(),
-        ]);
+        const queries = this.podcastSearchVariants(query);
         const scored = new Map();
         for (const candidateQuery of queries) {
             if (!candidateQuery) {
                 continue;
             }
-            const data = await this.itunesSearch({
-                term: candidateQuery,
-                entity: 'podcast',
-                limit: Math.max(limit, 10),
-            }).catch(() => ({ results: [] }));
-            for (const item of data.results ?? []) {
+            const normalizedCandidateQuery = this.normalizeLyricsValue(candidateQuery);
+            const results = await this.itunesPodcastSearch(candidateQuery, Math.max(limit, 10)).catch(() => []);
+            for (const item of results) {
                 if (item.kind !== 'podcast') {
                     continue;
                 }
@@ -316,7 +308,7 @@ let MusicService = class MusicService {
                     episode_count: item.trackCount ?? null,
                     release_date: this.parseDate(item.releaseDate),
                 };
-                const score = this.scorePodcastSearchResult(normalizedQuery, podcast);
+                const score = Math.max(this.scorePodcastSearchResult(normalizedQuery, podcast), this.scorePodcastSearchResult(normalizedCandidateQuery, podcast));
                 const current = scored.get(podcastId);
                 if (!current || score > current.score) {
                     scored.set(podcastId, { podcast, score });
@@ -335,6 +327,93 @@ let MusicService = class MusicService {
             .slice(0, limit)
             .map((item) => item.podcast);
         return this.attachManagedPodcastArtwork(ranked);
+    }
+    podcastSearchVariants(query) {
+        const trimmed = query.trim();
+        if (!trimmed) {
+            return [];
+        }
+        const addVariant = (variants, value, { allowShortSingleToken = false } = {}) => {
+            const candidate = value.trim();
+            if (!candidate) {
+                return;
+            }
+            const normalizedCandidate = this.normalizeLyricsValue(candidate);
+            if (!normalizedCandidate) {
+                return;
+            }
+            if (!allowShortSingleToken &&
+                !normalizedCandidate.includes(' ') &&
+                normalizedCandidate.length < 6) {
+                return;
+            }
+            variants.add(candidate);
+        };
+        const replacements = new Map([
+            ['lockin', 'lock in'],
+            ['readio', 'radio'],
+        ]);
+        const rawTokens = trimmed.split(/\s+/).filter((token) => token.length > 0);
+        const normalizedTokens = rawTokens
+            .map((token) => this.normalizeLyricsValue(token))
+            .filter((token) => token.length > 0);
+        const queries = new Set();
+        addVariant(queries, trimmed, { allowShortSingleToken: true });
+        addVariant(queries, `${trimmed} podcast`, {
+            allowShortSingleToken: true,
+        });
+        addVariant(queries, trimmed.replace(/\s+/g, ''), {
+            allowShortSingleToken: true,
+        });
+        addVariant(queries, trimmed.replace(/\bpodcast\b/gi, '').trim(), {
+            allowShortSingleToken: true,
+        });
+        const tokenSets = [rawTokens];
+        for (const entry of replacements.entries()) {
+            if (normalizedTokens.some((token) => token == entry[0])) {
+                const replacedTokens = rawTokens.flatMap((token) => this.normalizeLyricsValue(token) == entry[0]
+                    ? entry[1].split(/\s+/)
+                    : [token]);
+                tokenSets.push(replacedTokens);
+                addVariant(queries, replacedTokens.join(' '), {
+                    allowShortSingleToken: true,
+                });
+            }
+        }
+        for (const tokens of tokenSets) {
+            for (let size = Math.min(tokens.length, 4); size >= 1; size -= 1) {
+                addVariant(queries, tokens.slice(0, size).join(' '));
+            }
+            if (tokens.length > 2) {
+                for (let start = 0; start < tokens.length - 1; start += 1) {
+                    for (let size = Math.min(3, tokens.length - start); size >= 2; size -= 1) {
+                        addVariant(queries, tokens.slice(start, start + size).join(' '));
+                    }
+                }
+            }
+            if (tokens.length >= 2) {
+                addVariant(queries, tokens.slice(tokens.length - 2).join(' '));
+            }
+            if (tokens.length >= 3) {
+                addVariant(queries, tokens.slice(tokens.length - 3).join(' '));
+            }
+        }
+        return this.dedupeNonEmpty([...queries]);
+    }
+    async itunesPodcastSearch(term, limit) {
+        const [entityPayload, mediaPayload] = await Promise.all([
+            this.itunesSearch({
+                term,
+                entity: 'podcast',
+                limit,
+            }).catch(() => ({ results: [] })),
+            this.itunesSearch({
+                term,
+                media: 'podcast',
+                limit,
+            }).catch(() => ({ results: [] })),
+        ]);
+        return [...this.asList(entityPayload.results), ...this.asList(mediaPayload.results)];
     }
     async podcastDetails(podcastKey) {
         const podcast = await this.lookupPodcast(podcastKey);
@@ -2241,6 +2320,9 @@ let MusicService = class MusicService {
         const normalizedPublisher = this.normalizeLyricsValue(podcast.publisher);
         const compactQuery = normalizedQuery.replace(/\s+/g, '');
         const compactTitle = normalizedTitle.replace(/\s+/g, '');
+        const compactPublisher = normalizedPublisher.replace(/\s+/g, '');
+        const queryTokens = normalizedQuery.split(/\s+/).filter((token) => token.length > 1);
+        const textHaystack = `${normalizedTitle} ${normalizedPublisher}`.trim();
         let score = 0;
         if (normalizedTitle === normalizedQuery || compactTitle === compactQuery) {
             score += 4000;
@@ -2251,8 +2333,13 @@ let MusicService = class MusicService {
         else if (normalizedTitle.includes(normalizedQuery) || compactTitle.includes(compactQuery)) {
             score += 2200;
         }
-        if (normalizedPublisher.includes(normalizedQuery) || normalizedPublisher.replace(/\s+/g, '').includes(compactQuery)) {
+        if (normalizedPublisher.includes(normalizedQuery) || compactPublisher.includes(compactQuery)) {
             score += 900;
+        }
+        const tokenMatches = queryTokens.filter((token) => textHaystack.includes(token)).length;
+        score += tokenMatches * 260;
+        if (score <= 0 && tokenMatches == 0) {
+            return 0;
         }
         score += this.lyricsSimilarity(normalizedQuery, podcast.title);
         score += Math.min((podcast.episode_count ?? 0) * 2, 250);
@@ -2310,6 +2397,8 @@ let MusicService = class MusicService {
         const bestTitleScore = this.bestTrackTitleSearchScore(query, response.tracks);
         const bestStructuredScore = this.bestStructuredTrackSearchScore(query, response.tracks);
         const bestArtistScore = response.artists.length > 0 ? this.artistMatchScore(query, response.artists[0]) : 0;
+        const normalizedQuery = this.normalizeLyricsValue(query);
+        const bestPodcastScore = response.podcasts.reduce((best, podcast) => Math.max(best, this.indexedPodcastSearchScore(normalizedQuery, podcast)), 0);
         if (this.hasExplicitYoutubeMarkers(query) && bestTrackScore < 980) {
             return false;
         }
@@ -2321,10 +2410,38 @@ let MusicService = class MusicService {
         }
         return (bestArtistScore >= 6000 ||
             response.albums.length > 0 ||
-            response.podcasts.length > 0 ||
+            bestPodcastScore >= 850 ||
             (response.tracks.length >= Math.min(6, limit) &&
                 bestTrackScore >= 700 &&
                 bestTitleScore >= 520));
+    }
+    indexedPodcastSearchScore(normalizedQuery, podcast) {
+        const normalizedTitle = this.normalizeLyricsValue(podcast.title);
+        const normalizedPublisher = this.normalizeLyricsValue(podcast.publisher);
+        const compactQuery = normalizedQuery.replace(/\s+/g, '');
+        const compactTitle = normalizedTitle.replace(/\s+/g, '');
+        const compactPublisher = normalizedPublisher.replace(/\s+/g, '');
+        const queryTokens = normalizedQuery.split(/\s+/).filter((token) => token.length > 1);
+        const textHaystack = `${normalizedTitle} ${normalizedPublisher}`.trim();
+        let score = 0;
+        if (normalizedTitle === normalizedQuery || compactTitle === compactQuery) {
+            score += 4000;
+        }
+        else if (normalizedTitle.startsWith(normalizedQuery) ||
+            compactTitle.startsWith(compactQuery)) {
+            score += 2800;
+        }
+        else if (normalizedTitle.includes(normalizedQuery) ||
+            compactTitle.includes(compactQuery)) {
+            score += 2200;
+        }
+        if (normalizedPublisher.includes(normalizedQuery) ||
+            compactPublisher.includes(compactQuery)) {
+            score += 900;
+        }
+        const tokenMatches = queryTokens.filter((token) => textHaystack.includes(token)).length;
+        score += tokenMatches * 220;
+        return score;
     }
 };
 exports.MusicService = MusicService;

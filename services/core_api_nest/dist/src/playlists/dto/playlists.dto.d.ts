@@ -4,6 +4,11 @@ export declare class PlaylistCreateDto {
     description?: string;
     artwork_url?: string;
 }
+export declare class PlaylistUpdateDto {
+    name?: string;
+    description?: string;
+    artwork_url?: string;
+}
 export declare class PlaylistTrackCreateDto {
     track: TrackPayload;
 }

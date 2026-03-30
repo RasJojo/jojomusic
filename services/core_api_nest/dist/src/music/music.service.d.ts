@@ -20,6 +20,8 @@ export declare class MusicService {
     browseCategories(): Promise<BrowseCategoryPayload[]>;
     browseCategory(categoryId: string): Promise<BrowseCategoryResponse>;
     searchPodcasts(query: string, limit?: number): Promise<PodcastPayload[]>;
+    private podcastSearchVariants;
+    private itunesPodcastSearch;
     podcastDetails(podcastKey: string): Promise<PodcastDetailsResponse>;
     lyrics(artist: string, title: string): Promise<LyricsResponse | null>;
     resolveTrack(payload: {
@@ -155,4 +157,5 @@ export declare class MusicService {
     private parseDuration;
     private safe;
     private hasUsefulIndexedSearch;
+    private indexedPodcastSearchScore;
 }

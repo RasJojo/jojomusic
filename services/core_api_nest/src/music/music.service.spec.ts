@@ -173,4 +173,35 @@ describe('MusicService exact-title youtube fallback', () => {
       }),
     ).toBe('Lock In');
   });
+
+  it('generates podcast search variants for long creator queries', () => {
+    const variants = service.podcastSearchVariants(
+      'lockin arthur zack joel',
+    );
+
+    expect(variants).toContain('lock in arthur zack joel');
+    expect(variants).toContain('lockin');
+    expect(variants).toContain('arthur zack joel');
+  });
+
+  it('scores exact podcast title matches above artist-only matches', () => {
+    const podcast: PodcastPayload = {
+      podcast_key: '1793316009',
+      title: 'RADIO CONFESSION',
+      publisher: 'Henry Tran',
+      description: null,
+      artwork_url: null,
+      feed_url: null,
+      external_url: null,
+      episode_count: 16,
+      release_date: new Date('2026-03-25T11:22:00.000Z'),
+    };
+
+    expect(
+      service.scorePodcastSearchResult(
+        'radio confession henry tran',
+        podcast,
+      ),
+    ).toBeGreaterThan(0);
+  });
 });

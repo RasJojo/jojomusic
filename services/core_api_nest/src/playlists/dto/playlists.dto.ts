@@ -16,6 +16,22 @@ export class PlaylistCreateDto {
   artwork_url?: string;
 }
 
+export class PlaylistUpdateDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(120)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  artwork_url?: string;
+}
+
 export class PlaylistTrackCreateDto {
   @Allow()
   track!: TrackPayload;

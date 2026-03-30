@@ -280,6 +280,23 @@ class ApiService {
     return Playlist.fromJson(response.data!);
   }
 
+  Future<Playlist> updatePlaylist({
+    required String playlistId,
+    String? name,
+    String? description,
+    String? artworkUrl,
+  }) async {
+    final response = await _dio.patch<Map<String, dynamic>>(
+      '/api/v1/playlists/$playlistId',
+      data: {
+        'name': name,
+        'description': description,
+        'artwork_url': artworkUrl,
+      },
+    );
+    return Playlist.fromJson(response.data!);
+  }
+
   Future<Playlist> addTrackToPlaylist({
     required String playlistId,
     required Track track,
