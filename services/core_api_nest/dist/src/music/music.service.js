@@ -74,7 +74,7 @@ let MusicService = class MusicService {
             });
             return hydrated;
         }
-        const redisCacheKey = `search:v3:${cacheKey}`;
+        const redisCacheKey = `search:v7:${cacheKey}`;
         const sharedCached = await this.redisCache.getJson(redisCacheKey);
         if (sharedCached) {
             const hydrated = await this.refreshManagedSearchResponse(sharedCached);
@@ -86,7 +86,7 @@ let MusicService = class MusicService {
             return hydrated;
         }
         const indexed = await this.searchIndex.search(normalizedQuery, limit);
-        if (this.hasUsefulIndexedSearch(indexed, limit)) {
+        if (this.hasUsefulIndexedSearch(indexed, normalizedQuery, limit)) {
             this.searchCache.set(cacheKey, {
                 expiresAt: Date.now() + 5 * 60 * 1000,
                 value: indexed,
@@ -122,6 +122,17 @@ let MusicService = class MusicService {
             const specificAlbums = this.dedupeAlbums([...musicbrainzAlbums, ...itunesAlbums], Math.min(limit, 10));
             if (specificAlbums.length > 0) {
                 resultAlbums = specificAlbums;
+            }
+        }
+        if (this.shouldUseYoutubeSearchFallback(normalizedQuery, resultTracks, artists)) {
+            const youtubeTracks = await this.safe(this.searchYoutubeTracks(normalizedQuery, Math.min(limit, 6)), []);
+            if (youtubeTracks.length > 0) {
+                resultTracks = this.dedupeTracks([...youtubeTracks, ...resultTracks], limit);
+                if (artists.length < 3) {
+                    artists = this.dedupeArtists([...this.youtubeArtistsFromTracks(youtubeTracks), ...artists], Math.min(limit, 6)).sort((left, right) => this.artistMatchScore(normalizedQuery, right) -
+                        this.artistMatchScore(normalizedQuery, left));
+                    artists = await this.enrichArtistImages(artists);
+                }
             }
         }
         const artistLookup = new Map(artists.map((artist) => [artist.artist_key, artist]));
@@ -1521,6 +1532,235 @@ let MusicService = class MusicService {
             source_url: saved.sourceUrl,
         });
     }
+    async searchYoutubeTracks(query, limit = 5) {
+        const timeoutMs = this.hasExplicitYoutubeMarkers(query)
+            ? this.appConfig.resolverTimeoutSeconds * 1000
+            : Math.min(this.appConfig.resolverTimeoutSeconds * 1000, 12000);
+        const payload = await (0, http_util_1.fetchJson)(`${this.appConfig.resolverApiUrl}/api/v1/search`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query, limit }),
+        }, timeoutMs).catch(() => null);
+        if (!payload?.results?.length) {
+            return [];
+        }
+        const tracks = payload.results
+            .map((candidate) => this.youtubeCandidateToTrack(candidate, query))
+            .filter((track) => !!track);
+        return this.dedupeTracks(tracks, limit);
+    }
+    youtubeCandidateToTrack(candidate, query) {
+        const rawTitle = (candidate.title ?? '').trim();
+        if (!rawTitle) {
+            return null;
+        }
+        const cleaned = this.cleanYoutubeCandidateTitle(rawTitle);
+        const segments = cleaned
+            .split(/\s+-\s+/)
+            .map((part) => part.trim())
+            .filter(Boolean);
+        let artist = (candidate.artist ?? '').trim();
+        let title = cleaned || rawTitle;
+        if (segments.length >= 2) {
+            artist = segments[0];
+            title = segments.slice(1).join(' - ');
+        }
+        if (!artist || this.looksLikeGenericYoutubeArtist(artist)) {
+            const queryParts = query
+                .split(/\s+-\s+/)
+                .map((part) => part.trim())
+                .filter(Boolean);
+            if (queryParts.length >= 2) {
+                artist = queryParts[0];
+            }
+        }
+        if (!artist) {
+            artist = 'YouTube';
+        }
+        return (0, payloads_1.makeTrackPayload)({
+            title,
+            artist,
+            artwork_url: candidate.thumbnail_url ?? null,
+            duration_ms: candidate.duration_ms ?? null,
+            provider: 'youtube',
+            external_id: candidate.webpage_url ?? null,
+        });
+    }
+    cleanYoutubeCandidateTitle(value) {
+        return value
+            .replace(/\[[^\]]*\]/g, ' ')
+            .replace(/\((?:official|lyrics?|lyric video|official video|music video|official audio|audio officiel|clip officiel|clip|visualizer|video clip)[^)]*\)/gi, ' ')
+            .replace(/\b(?:official|lyrics?|lyric video|official video|music video|official audio|audio officiel|clip officiel|visualizer)\b/gi, ' ')
+            .replace(/\b(?:gasy nouveaute|nouveaute)\s*\d{4}\b/gi, ' ')
+            .replace(/\s{2,}/g, ' ')
+            .replace(/\s+-\s*$/g, '')
+            .trim();
+    }
+    looksLikeGenericYoutubeArtist(value) {
+        const normalized = this.normalizeLyricsValue(value);
+        return (!normalized ||
+            /\b(?:records?|digital|music|official|channel|tv|prod|studio|media)\b/.test(normalized));
+    }
+    youtubeArtistsFromTracks(tracks) {
+        return tracks.map((track) => ({
+            artist_key: (0, payloads_1.buildArtistKey)(track.artist),
+            name: track.artist,
+            image_url: track.artist_image_url ?? track.artwork_url ?? null,
+            provider: 'youtube',
+            external_id: null,
+            url: null,
+            listeners: null,
+            summary: null,
+        }));
+    }
+    shouldUseYoutubeSearchFallback(query, tracks, artists) {
+        const bestTrackScore = this.bestTrackSearchScore(query, tracks);
+        const bestTitleScore = this.bestTrackTitleSearchScore(query, tracks);
+        const bestStructuredScore = this.bestStructuredTrackSearchScore(query, tracks);
+        const bestArtistScore = artists.length > 0 ? this.artistMatchScore(query, artists[0]) : 0;
+        if (tracks.length === 0) {
+            return true;
+        }
+        if (this.hasExplicitYoutubeMarkers(query) && bestTrackScore < 980) {
+            return true;
+        }
+        if (this.hasStructuredYoutubeTitleQuery(query) && bestStructuredScore < 860) {
+            return true;
+        }
+        if (this.looksLikeYoutubeTitleQuery(query) && bestTitleScore < 760) {
+            return true;
+        }
+        if (tracks.length < 3 && bestTitleScore < 620 && bestArtistScore < 6000) {
+            return true;
+        }
+        return bestTrackScore < 620 && bestTitleScore < 520 && bestArtistScore < 6000;
+    }
+    looksLikeYoutubeTitleQuery(query) {
+        const normalized = this.normalizeLyricsValue(query);
+        const wordCount = normalized ? normalized.split(/\s+/).length : 0;
+        return (/\b(?:official|video|clip|lyrics?|visualizer|audio|ft\.?|feat\.?|x)\b/i.test(query) ||
+            /[\[\]()]/.test(query) ||
+            /\d{4}/.test(query) ||
+            wordCount >= 4);
+    }
+    hasExplicitYoutubeMarkers(query) {
+        return (/[\[\]()]/.test(query) ||
+            /\d{4}/.test(query) ||
+            /\b(?:official|video|clip|lyrics?|visualizer|audio|karaoke)\b/i.test(query));
+    }
+    hasStructuredYoutubeTitleQuery(query) {
+        return !!this.parseStructuredYoutubeTitleQuery(query);
+    }
+    parseStructuredYoutubeTitleQuery(query) {
+        const hyphenParts = query
+            .trim()
+            .split(/\s+-\s+/)
+            .map((part) => part.trim())
+            .filter(Boolean);
+        if (hyphenParts.length < 2) {
+            return null;
+        }
+        const artistTokens = (hyphenParts[0] ?? '')
+            .toLowerCase()
+            .normalize('NFKD')
+            .replace(/[^\x00-\x7F]/g, '')
+            .replace(/[^a-z0-9]+/g, ' ')
+            .split(/\s+/)
+            .map((token) => token.trim())
+            .filter((token) => token.length > 1 &&
+            !['ft', 'feat', 'featuring', 'x', 'and', 'avec'].includes(token));
+        const title = this.normalizeLyricsValue(hyphenParts.slice(1).join(' - '));
+        if (!title) {
+            return null;
+        }
+        return {
+            artistTokens,
+            title,
+        };
+    }
+    bestTrackSearchScore(query, tracks) {
+        return tracks.reduce((best, track) => Math.max(best, this.trackSearchScore(query, track)), 0);
+    }
+    bestTrackTitleSearchScore(query, tracks) {
+        return tracks.reduce((best, track) => Math.max(best, this.trackTitleSearchScore(query, track)), 0);
+    }
+    bestStructuredTrackSearchScore(query, tracks) {
+        return tracks.reduce((best, track) => Math.max(best, this.structuredTrackSearchScore(query, track)), 0);
+    }
+    trackSearchScore(query, track) {
+        const normalizedQuery = this.normalizeLyricsValue(query);
+        const title = this.normalizeLyricsValue(track.title);
+        const artist = this.normalizeLyricsValue(track.artist);
+        const album = this.normalizeLyricsValue(track.album ?? '');
+        const combined = [artist, title, album].filter(Boolean).join(' ');
+        if (!normalizedQuery || !combined) {
+            return 0;
+        }
+        if (normalizedQuery === title || normalizedQuery === combined) {
+            return 1000;
+        }
+        if (title.startsWith(normalizedQuery) || combined.startsWith(normalizedQuery)) {
+            return 920;
+        }
+        if (title.includes(normalizedQuery) || combined.includes(normalizedQuery)) {
+            return 820;
+        }
+        const titleSimilarity = this.lyricsSimilarity(normalizedQuery, title);
+        const combinedSimilarity = this.lyricsSimilarity(normalizedQuery, combined);
+        const artistBonus = artist && normalizedQuery.includes(artist) ? 80 : 0;
+        return Math.min(Math.max(titleSimilarity, combinedSimilarity) + artistBonus, 1000);
+    }
+    trackTitleSearchScore(query, track) {
+        const focus = this.searchTitleFocus(query);
+        const title = this.normalizeLyricsValue(track.title);
+        if (!focus || !title) {
+            return 0;
+        }
+        if (focus === title) {
+            return 1000;
+        }
+        if (title.startsWith(focus) || focus.startsWith(title)) {
+            return 900;
+        }
+        if (title.includes(focus) || focus.includes(title)) {
+            return 800;
+        }
+        return this.lyricsSimilarity(focus, title);
+    }
+    structuredTrackSearchScore(query, track) {
+        const parsed = this.parseStructuredYoutubeTitleQuery(query);
+        if (!parsed) {
+            return 0;
+        }
+        const titleScore = this.trackTitleSearchScore(query, track);
+        if (titleScore === 0) {
+            return 0;
+        }
+        const artist = this.normalizeLyricsValue(track.artist);
+        const matchedArtistTokens = parsed.artistTokens.filter((token) => artist.includes(token));
+        if (parsed.artistTokens.length === 0) {
+            return titleScore;
+        }
+        if (matchedArtistTokens.length === parsed.artistTokens.length) {
+            return Math.min(1000, Math.round(titleScore * 0.7 + 300));
+        }
+        if (matchedArtistTokens.length === 0) {
+            return Math.round(titleScore * 0.45);
+        }
+        const ratio = matchedArtistTokens.length / parsed.artistTokens.length;
+        return Math.min(Math.round(titleScore * (0.4 + ratio * 0.25)), 799);
+    }
+    searchTitleFocus(query) {
+        const normalized = query.trim();
+        const hyphenParts = normalized
+            .split(/\s+-\s+/)
+            .map((part) => part.trim())
+            .filter(Boolean);
+        if (hyphenParts.length >= 2) {
+            return this.normalizeLyricsValue(hyphenParts.slice(1).join(' - '));
+        }
+        return this.normalizeLyricsValue(normalized);
+    }
     findBestArtistMatch(query, artists) {
         const key = (0, payloads_1.buildArtistKey)(query);
         return (artists.find((artist) => artist.artist_key === key) ??
@@ -2007,14 +2247,29 @@ let MusicService = class MusicService {
             return fallback;
         }
     }
-    hasUsefulIndexedSearch(response, limit) {
+    hasUsefulIndexedSearch(response, query, limit) {
         if (!response) {
             return false;
         }
-        return (response.artists.length > 0 ||
+        const bestTrackScore = this.bestTrackSearchScore(query, response.tracks);
+        const bestTitleScore = this.bestTrackTitleSearchScore(query, response.tracks);
+        const bestStructuredScore = this.bestStructuredTrackSearchScore(query, response.tracks);
+        const bestArtistScore = response.artists.length > 0 ? this.artistMatchScore(query, response.artists[0]) : 0;
+        if (this.hasExplicitYoutubeMarkers(query) && bestTrackScore < 980) {
+            return false;
+        }
+        if (this.hasStructuredYoutubeTitleQuery(query) && bestStructuredScore < 860) {
+            return false;
+        }
+        if (this.looksLikeYoutubeTitleQuery(query) && bestTitleScore < 760) {
+            return false;
+        }
+        return (bestArtistScore >= 6000 ||
             response.albums.length > 0 ||
             response.podcasts.length > 0 ||
-            response.tracks.length >= Math.min(6, limit));
+            (response.tracks.length >= Math.min(6, limit) &&
+                bestTrackScore >= 700 &&
+                bestTitleScore >= 520));
     }
 };
 exports.MusicService = MusicService;
