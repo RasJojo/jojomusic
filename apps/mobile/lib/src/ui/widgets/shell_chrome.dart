@@ -151,35 +151,12 @@ class _ProfileShortcutButton extends ConsumerWidget {
           child: Tooltip(
             message: tooltip,
             child: Center(
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  JojoLogo(
-                    size: compact ? 26 : 30,
-                    borderRadius: compact ? 9 : 10,
-                  ),
-                  Positioned(
-                    right: -2,
-                    bottom: -3,
-                    child: Container(
-                      width: compact ? 18 : 20,
-                      height: compact ? 18 : 20,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF102021),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: const Color(0x1FFFFFFF)),
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        initial.toUpperCase(),
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: JojoColors.text,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+              child: Text(
+                initial.toUpperCase(),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: JojoColors.text,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
             ),
           ),
@@ -245,18 +222,11 @@ class _ShellSideRail extends ConsumerWidget {
             }
           },
           leading: Padding(
-            padding: const EdgeInsets.only(top: 6, bottom: 18),
+            padding: const EdgeInsets.only(top: 8, bottom: 12),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Container(
-                  width: 52,
-                  height: 52,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  child: const JojoLogo(size: 52, borderRadius: 18),
-                ),
+                const JojoLogo(size: 52, borderRadius: 18),
                 const SizedBox(height: 10),
                 Text(
                   'JojoMusique',
