@@ -344,9 +344,6 @@ class _HomeTab extends ConsumerWidget {
                 title: 'Bonjour $firstName',
                 subtitle:
                     'Mixes personnalisés, catégories, podcasts et titres à relancer dans un home plus éditorial.',
-                trailing: const _HeaderBadge(
-                  icon: Icons.wifi_tethering_rounded,
-                ),
               ),
               const SizedBox(height: 22),
               if (featured != null) ...[
@@ -1925,26 +1922,6 @@ String _browseCategoryBadge(String categoryId) {
     'podcasts-editorial' => 'Podcast',
     _ => 'Explorer',
   };
-}
-
-class _HeaderBadge extends StatelessWidget {
-  const _HeaderBadge({required this.icon});
-
-  final IconData icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        color: const Color(0x660C1718),
-        border: Border.all(color: const Color(0x1FFFFFFF)),
-      ),
-      child: Icon(icon, color: JojoColors.primary),
-    );
-  }
 }
 
 String _normalizeSearchValue(String value) {

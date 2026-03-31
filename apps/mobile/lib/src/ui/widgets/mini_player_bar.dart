@@ -9,7 +9,6 @@ import '../../state/player_controller.dart';
 import '../lyrics_screen.dart';
 import '../queue_screen.dart';
 import '../theme/jojo_theme.dart';
-import 'jojo_logo.dart';
 import 'jojo_surfaces.dart';
 import 'media_artwork.dart';
 import 'track_playlist_picker_sheet.dart';
@@ -487,22 +486,15 @@ class _DesktopPlayerPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return JojoSurfaceCard(
-      padding: const EdgeInsets.fromLTRB(18, 22, 18, 22),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 14, 8, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 54,
-            height: 54,
-            decoration: BoxDecoration(
-              color: JojoColors.surfaceBright,
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: const Padding(
-              padding: EdgeInsets.all(8),
-              child: JojoLogo(size: 38, borderRadius: 14),
-            ),
+          Icon(
+            Icons.multitrack_audio_rounded,
+            size: 36,
+            color: JojoColors.mutedStrong,
           ),
           const SizedBox(height: 18),
           Text(
