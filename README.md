@@ -16,311 +16,155 @@ JojoMusic est une suite complète pour découvrir, chercher et écouter de la mu
 
 ## 🏗️ Architecture Monorepo
 
-```
-JojoMusic/
-│
-├─ apps/
-│  │
-│  ├─ mobile/
-│  │  │  Flutter app (iOS, Android, macOS)
-│  │  │  State: Riverpod
-│  │  │  Audio: audio_service + just_audio
-│  │  │  Player: Full-screen + mini-player
-│  │  └─ lib/src/
-│  │     ├─ ui/          (screens & widgets)
-│  │     ├─ state/       (controllers Riverpod)
-│  │     ├─ data/        (API client, models)
-│  │     └─ audio/       (playback, notifications)
-│  │
-│  └─ landing/
-│     Landing page web + APK download
-│
-├─ services/
-│  │
-│  ├─ core_api_nest/
-│  │  │  NestJS API stateful
-│  │  │  Port: 8000
-│  │  │  Framework: NestJS v10 + Prisma + PostgreSQL
-│  │  └─ src/
-│  │     ├─ auth/        (JWT, sessions)
-│  │     ├─ user/        (profiles, preferences)
-│  │     ├─ library/     (likes, playlists)
-│  │     ├─ search/      (search multi-source)
-│  │     ├─ recommendations/  (algo recommandations)
-│  │     └─ streaming/   (lyrics, metadata)
-│  │
-│  └─ resolver_api/
-│     │  Python API stateless
-│     │  Port: 5000
-│     │  Framework: FastAPI + yt-dlp
-│     │  Rôle: Résoudre "chanson" → URL stream audio
-│     │
-│     └─ app/
-│        ├─ sources/     (Spotify, YouTube, fallback)
-│        ├─ resolver.py  (orchestration)
-│        ├─ metadata.py  (enrichissement)
-│        └─ cache.py     (Redis)
-│
-└─ docker-compose.yml   (orchestration complète)
+```mermaid
+graph TB
+    subgraph apps["📱 Applications"]
+        mobile["Mobile App<br/>Flutter<br/><br/>iOS + Android<br/>+ macOS"]
+        landing["Landing Page<br/>Web<br/><br/>APK Download<br/>+ Info"]
+    end
+    
+    subgraph services["⚙️ Services (Backend)"]
+        core["Core API<br/>NestJS v10<br/>Port 8000<br/><br/>• Auth (JWT)<br/>• Users<br/>• Library<br/>• Search<br/>• Recommendations<br/>• Streaming"]
+        resolver["Resolver API<br/>FastAPI<br/>Port 5000<br/><br/>• Spotify<br/>• YouTube<br/>• yt-dlp<br/>• Metadata"]
+    end
+    
+    subgraph data["💾 Data Layer"]
+        postgres["PostgreSQL<br/><br/>• Users<br/>• Playlists<br/>• Library<br/>• History"]
+        redis["Redis Cache<br/><br/>• Sessions<br/>• Resolved URLs<br/>• Metadata"]
+    end
+    
+    mobile --> core
+    landing --> core
+    core --> resolver
+    core --> postgres
+    core --> redis
+    resolver --> redis
+    
+    style apps fill:#e1f5ff
+    style services fill:#f3e5f5
+    style data fill:#fff3e0
 ```
 
 ---
 
-## 🎼 Flux d'architecture
+## 🔍 Flux de Recherche Multi-Source
 
-```
-┌──────────────────────────────┐
-│   User App (Mobile/Web)      │
-│  • Search input              │
-│  • Play track                │
-│  • Create playlist           │
-└──────────────┬───────────────┘
-               │ HTTP/JSON
-               │
-    ┌──────────▼────────────┐
-    │  NGINX/Load Balancer  │
-    │  (reverse proxy)       │
-    └──┬─────────────────┬───┘
-       │                 │
-   ┌───▼────────┐   ┌────▼─────────┐
-   │ Core API   │   │ Resolver API │
-   │ (NestJS)   │   │ (FastAPI)    │
-   │ :8000      │   │ :5000        │
-   └───┬────────┘   └────┬─────────┘
-       │                 │
-       │                 ├─→ YouTube Music API
-       │                 │
-       │                 ├─→ Spotify API
-       │                 │
-       │                 ├─→ yt-dlp (fallback)
-       │                 │
-       │                 └─→ FFmpeg (audio extract)
-       │
-   ┌───▼────────────────┐
-   │  PostgreSQL        │
-   │  Database          │
-   │                    │
-   │ • Users            │
-   │ • Playlists        │
-   │ • Library (likes)  │
-   │ • History          │
-   │ • Favorites        │
-   └────────────────────┘
-       │
-   ┌───▼────────────┐
-   │  Redis Cache   │
-   │                │
-   │ • Sessions     │
-   │ • Resolved URLs│
-   │ • Metadata     │
-   └────────────────┘
+```mermaid
+sequenceDiagram
+    participant User as User (App)
+    participant Core as Core API
+    participant Redis as Redis Cache
+    participant Resolver as Resolver API
+    participant Spotify as Spotify API
+    participant YouTube as YouTube API
+    participant YTDLP as yt-dlp
+    
+    User->>Core: POST /api/search?q=Breaking+Bad
+    Core->>Redis: Check cache
+    alt Cached
+        Redis-->>Core: Return results
+        Core-->>User: ✅ Instant
+    else Cache Miss
+        Core->>Resolver: POST /resolver/search
+        Resolver->>Spotify: Try Spotify API
+        alt Spotify Match Found
+            Spotify-->>Resolver: Track metadata
+            Resolver-->>Core: Results
+        else No Spotify Match
+            Resolver->>YouTube: Try YouTube Music
+            alt YouTube Match Found
+                YouTube-->>Resolver: Results
+            else No YouTube Match
+                Resolver->>YTDLP: Generic search
+                YTDLP-->>Resolver: Results
+            end
+        end
+        Core->>Redis: Cache results
+        Core-->>User: Search results
+    end
 ```
 
----
+### 2️⃣ Stream Resolution & Playback
 
-## 🔍 Flux de recherche & résolution de stream
-
-### 1️⃣ User Search
-```
-User types: "Breaking Bad intro"
-    │
-    ▼
-App POST /api/search?q=Breaking+Bad+intro
-    │ + Bearer Token
-    │
-    ▼
-Core API Backend
-    │
-    ├─ Check Redis cache (1 hour TTL)
-    │  if (cached) return cached_results
-    │
-    ├─ Query /resolver/search
-    │  POST http://resolver_api:5000/search
-    │  {query: "Breaking Bad intro"}
-    │
-    ▼
-Resolver API (Stateless)
-    │
-    ├─ Try Spotify Search API
-    │  GET https://api.spotify.com/v1/search
-    │  {q: "Breaking Bad intro", type: "track"}
-    │
-    │  If match found: {title, artist, album, spotify_uri}
-    │
-    ├─ If no Spotify match → Try YouTube Music
-    │  • Parse search results
-    │  • Extract official track metadata
-    │
-    ├─ If still no match → Fallback yt-dlp
-    │  yt-dlp -j "ytsearch:{query}"
-    │
-    ▼
-Return: [
-  {
-    id: "spotify:abc123",
-    title: "Breaking Bad Theme",
-    artist: "Dave Porter",
-    album: "Breaking Bad Soundtrack",
-    source: "spotify",
-    duration: 45,
-    artwork: "https://..."
-  },
-  {
-    id: "youtube:def456",
-    title: "Breaking Bad Opening",
-    artist: "Dave Porter",
-    source: "youtube",
-    ...
-  }
-]
-    │
-    ├─ Cache in Redis
-    │
-    ▼
-Core API returns to App ✅
-    │
-    ▼
-App displays results + artwork ✅
-```
-
-### 2️⃣ User Selects & Plays Track
-```
-User taps "Breaking Bad Theme" (Spotify version)
-    │
-    ▼
-App POST /api/streaming/resolve
-    {trackId: "spotify:abc123"}
-    │
-    ▼
-Core API
-    │
-    ├─ Check Redis: already resolved?
-    │  if (cached && ttl_ok) return stream_url
-    │
-    ├─ POST /resolver/resolve
-    │  {spotify_uri: "spotify:abc123"}
-    │
-    ▼
-Resolver API
-    │
-    ├─ Has Spotify token? Use Spotify API
-    │  GET /v1/tracks/{id}
-    │  → Récupère audio preview URL (30 sec)
-    │  OR utilise Web Playback SDK (si premium)
-    │
-    ├─ If Spotify fails → Try YouTube
-    │  yt-dlp "Breaking Bad Theme Dave Porter"
-    │  → Extract audio URL (opus/m4a codec)
-    │
-    ├─ Extract with FFmpeg if needed
-    │  ffmpeg -i [video] -q:a 0 -map a audio.mp3
-    │
-    ▼
-Return: {
-  streamUrl: "https://audio-cdn.../track.m4a",
-  codec: "aac",
-  bitrate: 256,
-  source: "spotify",
-  expiresAt: "2026-04-25T10:00:00Z",
-  metadata: {
-    title: "Breaking Bad Theme",
-    artist: "Dave Porter",
-    duration: 45
-  }
-}
-    │
-    ├─ Cache in Redis (15 min expiry)
-    │
-    ▼
-Core API returns to App ✅
-    │
-    ▼
-App initializes audio_service
-    │
-    ├─ Load stream URL in media player
-    ├─ Set notification with artwork
-    ├─ Start playback
-    │
-    ▼
-Track plays ✅
-    │
-    ├─ Every 5 sec: sync position
-    │  POST /api/library/history
-    │  {trackId, position, duration}
-    │
-    ├─ Optional: Fetch lyrics via LRCLIB
-    │  GET https://lrclib.net/api/get
-    │  {artist_name, track_name}
-    │
-    │  Display synchronized lyrics on screen
-    │
-    ▼
-On track end
-    │
-    ├─ Save in listen history
-    ├─ Update recommendations
-    ├─ Play next track (auto-queue)
-    │
-    ▼
-Complete ✅
+```mermaid
+graph LR
+    A["🎵 User Selects Track"] -->|POST /streaming/resolve| B["Core API"]
+    B --> C{Cache Hit?}
+    C -->|YES| D["Return stream URL<br/>& metadata"]
+    C -->|NO| E["Resolver:<br/>Determine source"]
+    
+    E --> E1{Spotify<br/>Available?}
+    E1 -->|YES| F["Use Spotify<br/>API Preview<br/>or Premium"]
+    E1 -->|NO| G["Try YouTube<br/>Music"]
+    
+    G --> G1{YT Found?}
+    G1 -->|YES| H["Extract audio<br/>yt-dlp"]
+    G1 -->|NO| I["Generic<br/>yt-dlp search"]
+    
+    H --> J["FFmpeg<br/>Convert if needed"]
+    I --> J
+    F --> J
+    
+    J --> K["Get stream URL<br/>+ codec info"]
+    K --> L["Cache<br/>15 min TTL"]
+    D --> L
+    
+    L --> M["📱 App<br/>Player"]
+    M --> N["Load audio_service<br/>Play track"]
+    N --> O["Sync progress<br/>every 5 sec"]
+    O --> P["On end:<br/>Save history<br/>Next track"]
+    
+    style E fill:#f3e5f5
+    style K fill:#fff3e0
+    style N fill:#c8e6c9
 ```
 
 ### 3️⃣ Playlist Management
-```
-User creates playlist "Running Mix"
-    │
-    ▼
-App POST /api/playlists
-    {
-      name: "Running Mix",
-      isPrivate: true,
-      tracks: [{id: "spotify:abc123"}, ...]
-    }
-    │
-    ▼
-Core API
-    │
-    ├─ Create playlist in DB
-    ├─ Add tracks with order
-    ├─ Invalidate user library cache
-    │
-    ▼
-On each track addition
-    │
-    ├─ Resolver resolves → cache stream URL
-    ├─ Add to history
-    │
-    ▼
-Playlist syncs across devices ✅
+
+```mermaid
+sequenceDiagram
+    participant User as User (App)
+    participant Core as Core API
+    participant Resolver as Resolver API
+    participant DB as PostgreSQL
+    participant Cache as Redis
+    
+    User->>Core: POST /api/playlists<br/>{name, tracks}
+    Core->>DB: Create playlist
+    DB-->>Core: ID created
+    Core->>Cache: Invalidate user library
+    
+    loop For each track
+        Core->>Resolver: Resolve stream URL
+        Resolver-->>Core: Stream URL
+        Core->>DB: Add track to playlist
+        Core->>Cache: Store resolved URL
+    end
+    
+    Core-->>User: Playlist created ✅
+    Note over User: Syncs across devices
 ```
 
 ### 4️⃣ Offline Downloads
-```
-User taps "Download" on track
-    │
-    ▼
-App calls Resolver for stream URL
-    │
-    ├─ Downloads audio file to device storage
-    ├─ Saves metadata locally
-    ├─ Marks in DB: downloadedAt
-    │
-    ▼
-When offline (no internet)
-    │
-    ├─ Player checks local storage first
-    ├─ If exists → play from disk
-    ├─ Else → fail gracefully (show "offline")
-    │
-    ▼
-When online again
-    │
-    ├─ Sync library state
-    ├─ Update play counts
-    ├─ Delete expired downloads
-    │
-    ▼
-Complete ✅
+
+```mermaid
+graph TD
+    A["User taps<br/>Download"] --> B["Resolver:<br/>Get stream URL"]
+    B --> C["Download to<br/>Device Storage"]
+    C --> D["Save metadata<br/>locally"]
+    D --> E["Mark in DB:<br/>downloadedAt"]
+    
+    E --> F["Offline Mode<br/>Active"]
+    F --> G{Internet?}
+    G -->|NO| H["Check local<br/>storage"]
+    H --> I["Play from<br/>disk ✅"]
+    
+    G -->|YES| J["Sync state"]
+    J --> K["Update play<br/>counts"]
+    K --> L["Cleanup<br/>expired"]
+    
+    style I fill:#c8e6c9
+    style F fill:#fff3e0
 ```
 
 ---
@@ -329,38 +173,95 @@ Complete ✅
 
 ### Core API Services (NestJS)
 
-| Service | Rôle |
-|---------|------|
-| `AuthService` | JWT generation, token validation, sessions |
-| `UserService` | User profiles, preferences, auth |
-| `LibraryService` | Likes, playlists, favorites management |
-| `HistoryService` | Listen history, play counts, analytics |
-| `SearchService` | Orchestrates Resolver API queries |
-| `RecommendationService` | ML-based suggestions (likes + history) |
-| `StreamService` | Resolves tracks → audio URLs |
+```mermaid
+graph TD
+    subgraph auth["🔐 Authentication"]
+        AuthService["AuthService<br/>JWT generation<br/>Token validation<br/>Sessions"]
+        UserService["UserService<br/>Profiles<br/>Preferences"]
+    end
+    
+    subgraph library["📚 Library Management"]
+        LibService["LibraryService<br/>Likes<br/>Playlists<br/>Favorites"]
+        HistoryService["HistoryService<br/>Listen history<br/>Play counts"]
+    end
+    
+    subgraph search["🔍 Search & Streaming"]
+        SearchService["SearchService<br/>Orchestrates<br/>Resolver API"]
+        StreamService["StreamService<br/>URL resolution<br/>Caching"]
+    end
+    
+    subgraph ml["🧠 Intelligence"]
+        RecommendService["RecommendationService<br/>ML suggestions<br/>Likes + history"]
+    end
+    
+    style auth fill:#e1f5ff
+    style library fill:#f3e5f5
+    style search fill:#fff3e0
+    style ml fill:#c8e6c9
+```
 
 ### Resolver Services (Python)
 
-| Module | Rôle |
-|--------|------|
-| `SpotifySource` | Spotify Web API integration |
-| `YouTubeSource` | YouTube Music parsing, yt-dlp |
-| `FallbackSource` | Generic yt-dlp scraper |
-| `Cache` | Redis URL caching with TTL |
-| `Metadata` | Artwork, duration, codec detection |
-| `Resolver` | Orchestrates source selection |
+```mermaid
+graph LR
+    A["Query:<br/>Breaking Bad"] --> B["Resolver<br/>Orchestrator"]
+    
+    B --> C["SpotifySource<br/>Web API"]
+    B --> D["YouTubeSource<br/>Parsing"]
+    B --> E["FallbackSource<br/>yt-dlp"]
+    
+    C --> F["🔗 Match?"]
+    D --> F
+    E --> F
+    
+    F --> G["Metadata<br/>Enrichment<br/>• Artwork<br/>• Duration<br/>• Codec"]
+    
+    G --> H["Cache<br/>Redis<br/>TTL: 15min"]
+    
+    H --> I["Return URL<br/>+ Metadata"]
+    
+    style B fill:#f3e5f5
+    style G fill:#fff3e0
+    style I fill:#c8e6c9
+```
 
 ### App Components (Flutter)
 
-| Screen/Widget | Rôle |
-|---------------|------|
-| `HomeScreen` | Recommendations, recently played |
-| `SearchScreen` | Track/album/artist search |
-| `PlaylistScreen` | Browse, edit, manage playlists |
-| `PlayerScreen` | Full-screen player with lyrics |
-| `MiniPlayerBar` | Persistent bottom player |
-| `LibraryScreen` | Liked tracks, downloads |
-| `AudioHandler` | background audio + notifications |
+```mermaid
+graph TB
+    subgraph screens["📱 Screens"]
+        HomeScreen["HomeScreen<br/>Recommendations<br/>Recently played"]
+        SearchScreen["SearchScreen<br/>Track/Album/Artist<br/>search"]
+        PlaylistScreen["PlaylistScreen<br/>Browse<br/>Edit<br/>Manage"]
+        PlayerScreen["PlayerScreen<br/>Full-screen<br/>Lyrics<br/>Controls"]
+        MiniPlayer["MiniPlayerBar<br/>Bottom persistent<br/>quick controls"]
+        LibraryScreen["LibraryScreen<br/>Favorites<br/>Downloads"]
+    end
+    
+    subgraph state["🔄 State (Riverpod)"]
+        AuthProvider["authProvider<br/>Token<br/>User"]
+        PlaybackProvider["playbackProvider<br/>Current track<br/>Position"]
+        LibraryProvider["libraryProvider<br/>Favorites<br/>Playlists"]
+    end
+    
+    subgraph audio["🔊 Audio"]
+        AudioHandler["AudioHandler<br/>Background<br/>Notifications"]
+        JustAudio["just_audio<br/>Codec support<br/>Streaming"]
+    end
+    
+    HomeScreen --> AuthProvider
+    SearchScreen --> AuthProvider
+    PlaylistScreen --> LibraryProvider
+    PlayerScreen --> PlaybackProvider
+    MiniPlayer --> PlaybackProvider
+    
+    PlayerScreen --> AudioHandler
+    AudioHandler --> JustAudio
+    
+    style screens fill:#e1f5ff
+    style state fill:#f3e5f5
+    style audio fill:#fff3e0
+```
 
 ---
 
@@ -474,78 +375,42 @@ YT_DLP_COOKIE_FILE=/config/youtube.txt  (optional)
 
 ## 📊 Fonctionnalités détaillées
 
-### Recherche Multi-Source
-
-```
-User query: "Dua Lipa Levitating"
-
-┌─────────────────────┐
-│ 1. Try Spotify API  │
-│    Results: [✓ Found]
-└─────────────────────┘
-    ↓
-Return Spotify + preview
-
-Si Spotify indisponible:
-┌─────────────────────┐
-│ 2. Try YouTube API  │
-│    Results: [✓ Found]
-└─────────────────────┘
-    ↓
-Extract audio via yt-dlp
-
-Si tout échoue:
-┌─────────────────────┐
-│ 3. Generic Search   │
-│    yt-dlp fallback  │
-└─────────────────────┘
-```
-
 ### Système de recommandations
 
+```mermaid
+graph LR
+    A["User Behavior"] --> B["Likes Count"]
+    A --> C["Listen History"]
+    A --> D["Playlists"]
+    
+    B --> E["🧮 Recommendation<br/>Algorithm"]
+    C --> E
+    D --> E
+    
+    E --> F["Score = <br/>likes×0.4 +<br/>listen×0.3 +<br/>genre×0.2 +<br/>artist×0.1"]
+    
+    F --> G{Score > 7?}
+    G -->|YES| H["✅ Show on Home<br/>Rank by score"]
+    G -->|NO| I["Hidden<br/>Fallback"]
+    
+    H --> J["Personalized<br/>Feed"]
+    I --> J
+    
+    style E fill:#f3e5f5
+    style J fill:#c8e6c9
 ```
-Recommendation Score = (
-  likes_weight * 0.4 +
-  listen_count * 0.3 +
-  genre_similarity * 0.2 +
-  artist_connection * 0.1
-)
 
-Exemple:
-User likes: "Breaking Bad" (score: 8/10)
-User listened: 5 times
-Similar genre: Drama soundtrack
-→ Recommended score: 7.5 → Show on Home
-```
+### Audio Playback Stack
 
-### Lecteur Audio Natif
-
-```
-Audio Playback Stack:
-┌───────────────────────────┐
-│  Flutter App              │
-└────────┬──────────────────┘
-         │
-┌────────▼──────────────────┐
-│  audio_service (plugin)   │
-│  • Background playback    │
-│  • Media notifications    │
-│  • Lock screen controls   │
-└────────┬──────────────────┘
-         │
-┌────────▼──────────────────┐
-│  just_audio (plugin)      │
-│  • Codec support          │
-│  • Streaming handling     │
-│  • Position sync          │
-└────────┬──────────────────┘
-         │
-┌────────▼──────────────────┐
-│  Native Audio (iOS/Android)
-│  • AirPlay (iOS)          │
-│  • Cast (Android)         │
-│  • Headphone controls     │
-└───────────────────────────┘
+```mermaid
+graph TD
+    A["Flutter App"] --> B["audio_service<br/>Background playback<br/>Media notifications<br/>Lock screen controls"]
+    B --> C["just_audio<br/>Codec support<br/>Streaming handling<br/>Position sync"]
+    C --> D["Native Audio<br/>iOS: AirPlay<br/>Android: Cast<br/>Headphone controls"]
+    
+    style B fill:#f3e5f5
+    style C fill:#fff3e0
+    style D fill:#c8e6c9
 ```
 
 ---
