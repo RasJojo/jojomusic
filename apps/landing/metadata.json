@@ -9,12 +9,12 @@
   "builds": {
     "android": {
       "name": "Android APK",
-      "size": "64.2 MB",
+      "size": "60 MB",
       "url": "/downloads/JojoMusique-android.apk",
       "releaseDate": "2026-04-24",
       "status": "available",
       "minApiLevel": 24,
-      "sha256": "pending"
+      "sha256": "f559190b1ebea17bda0b8eec1f11584025314a0346db99a7ce9a12f4aabcb79c"
     },
     "web": {
       "name": "Web Version",
