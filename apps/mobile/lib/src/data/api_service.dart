@@ -12,7 +12,7 @@ class ApiService {
           connectTimeout: const Duration(seconds: 15),
           receiveTimeout: const Duration(seconds: 30),
           headers: accessToken == null
-              ? null
+              ? <String, dynamic>{}
               : {'Authorization': 'Bearer $accessToken'},
         ),
       );
