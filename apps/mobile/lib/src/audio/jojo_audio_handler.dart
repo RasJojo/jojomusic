@@ -605,6 +605,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     }
 
     _isExtendingQueue = true;
+    _lastAutoplaySeedKey = seedTrack.trackKey;
     try {
       final tracks = await _api.fetchSimilarTracks(
         seedTrack,
@@ -617,7 +618,6 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         return;
       }
       _queueTracks.addAll(tracks);
-      _lastAutoplaySeedKey = seedTrack.trackKey;
       queue.add(_buildQueueMediaItems());
       final prefetchIndex = _currentIndex < 0 ? 0 : _currentIndex;
       unawaited(_prefetchQueueAround(prefetchIndex));
@@ -750,7 +750,9 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   @override
   Future<void> onTaskRemoved() async {
     _completionWatchdog.cancel();
-    await super.onTaskRemoved();
+    mediaItem.close();
+    playbackState.close();
+    queue.close();
   }
 }
 

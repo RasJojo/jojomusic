@@ -1,1 +1,48 @@
-// Metadata
+{
+  "app": {
+    "name": "JojoMusique",
+    "version": "1.0.1",
+    "build": 2,
+    "releaseDate": "2026-04-25T08:18:00Z",
+    "description": "Plateforme musicale self-hosted avec recherche multi-source, lecteur audio natif, et synchronisation cross-device"
+  },
+  "builds": {
+    "android": {
+      "name": "Android APK",
+      "size": "60 MB",
+      "url": "/downloads/JojoMusique-android.apk",
+      "releaseDate": "2026-04-25",
+      "status": "available",
+      "minApiLevel": 24,
+      "sha256": "2cef5ed61aebdd00aceccb21b3d74942fc8ba43b3967e4f7c2e099b2c4f4b24b"
+    },
+    "web": {
+      "name": "Web Version",
+      "size": "38 MB",
+      "url": "https://jojomusique.vercel.app",
+      "releaseDate": "2026-04-24",
+      "status": "available"
+    },
+    "macos": {
+      "name": "macOS App",
+      "size": "54.6 MB",
+      "releaseDate": "2026-04-24",
+      "status": "built",
+      "note": "Available for local installation"
+    }
+  },
+  "features": [
+    "Streaming multi-source (Spotify, YouTube, Local)",
+    "Lecteur audio natif avec support offline",
+    "Playlists et favoris",
+    "Synchronisation cross-device",
+    "Historique et recommandations",
+    "Support des paroles synchronisées"
+  ],
+  "requirements": {
+    "android": {
+      "minVersion": "7.0 (API 24)",
+      "storage": "100 MB"
+    }
+  }
+}
