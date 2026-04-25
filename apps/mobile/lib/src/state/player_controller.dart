@@ -49,7 +49,8 @@ class PlayerController {
       unawaited(
         ref
             .read(apiProvider)
-            .reportPlayback(eventType: 'play_started', track: track),
+            .reportPlayback(eventType: 'play_started', track: track)
+            .catchError((_) {}),
       );
       ref.invalidate(homeControllerProvider);
     } finally {
@@ -74,23 +75,26 @@ class PlayerController {
               : episode.durationSeconds! * 1000,
           sourceUrl: episode.audioUrl!,
         );
-    await ref
-        .read(apiProvider)
-        .reportPlayback(
-          eventType: 'play_started',
-          track: Track(
-            trackKey: episode.episodeKey,
-            title: episode.title,
-            artist: episode.publisher ?? episode.podcastTitle,
-            album: episode.podcastTitle,
-            artworkUrl: episode.artworkUrl,
-            durationMs: episode.durationSeconds == null
-                ? null
-                : episode.durationSeconds! * 1000,
-            provider: 'podcast',
-            externalId: episode.externalUrl,
-          ),
-        );
+    unawaited(
+      ref
+          .read(apiProvider)
+          .reportPlayback(
+            eventType: 'play_started',
+            track: Track(
+              trackKey: episode.episodeKey,
+              title: episode.title,
+              artist: episode.publisher ?? episode.podcastTitle,
+              album: episode.podcastTitle,
+              artworkUrl: episode.artworkUrl,
+              durationMs: episode.durationSeconds == null
+                  ? null
+                  : episode.durationSeconds! * 1000,
+              provider: 'podcast',
+              externalId: episode.externalUrl,
+            ),
+          )
+          .catchError((_) {}),
+    );
     ref.invalidate(homeControllerProvider);
   }
 

@@ -50,6 +50,7 @@ class _JojoMusiqueAppState extends ConsumerState<JojoMusiqueApp>
       final nextSession = next.asData?.value;
       final previousToken = previousSession?.accessToken;
       final nextToken = nextSession?.accessToken;
+      ref.read(audioHandlerProvider).updateApiToken(nextToken);
       if (nextToken != null && nextToken != previousToken) {
         ref.invalidate(homeControllerProvider);
         ref.invalidate(libraryControllerProvider);
@@ -86,7 +87,7 @@ class _JojoMusiqueAppState extends ConsumerState<JojoMusiqueApp>
         data: (authSession) =>
             authSession == null ? const LoginScreen() : const ShellScreen(),
         error: (error, stackTrace) =>
-            Scaffold(body: Center(child: Text('Session error: $error'))),
+            const LoginScreen(),
         loading: () =>
             const Scaffold(body: Center(child: CircularProgressIndicator())),
       ),

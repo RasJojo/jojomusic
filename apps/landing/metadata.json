@@ -1,9 +1,9 @@
 {
   "app": {
     "name": "JojoMusique",
-    "version": "1.0.1",
-    "build": 2,
-    "releaseDate": "2026-04-25T08:18:00Z",
+    "version": "1.0.2",
+    "build": 4,
+    "releaseDate": "2026-04-25T20:16:00Z",
     "description": "Plateforme musicale self-hosted avec recherche multi-source, lecteur audio natif, et synchronisation cross-device"
   },
   "builds": {
@@ -14,7 +14,7 @@
       "releaseDate": "2026-04-25",
       "status": "available",
       "minApiLevel": 24,
-      "sha256": "2cef5ed61aebdd00aceccb21b3d74942fc8ba43b3967e4f7c2e099b2c4f4b24b"
+      "sha256": "95c8a04bc9ab1ded0590cd9aa15a1ae0b8a822b4b7351f67f7551108766a9f6c"
     },
     "web": {
       "name": "Web Version",
