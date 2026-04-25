@@ -1937,3 +1937,4 @@ Color _colorFromHex(String value) {
   return Color(int.parse(buffer.toString(), radix: 16));
 }
 // Swipe
+// Refactor

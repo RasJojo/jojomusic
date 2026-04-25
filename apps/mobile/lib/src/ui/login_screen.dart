@@ -27,6 +27,23 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     super.dispose();
   }
 
+  String _formatErrorMessage(Object? error) {
+    final message = error.toString();
+    if (message.contains('Invalid credentials')) {
+      return 'Email ou mot de passe incorrect. Réessayez.';
+    }
+    if (message.contains('Connection refused') || message.contains('Failed host lookup')) {
+      return 'Impossible de se connecter au serveur. Vérifiez votre connexion internet.';
+    }
+    if (message.contains('Timeout')) {
+      return 'Connexion expirée. Réessayez.';
+    }
+    if (message.contains('409') || message.contains('Email already in use')) {
+      return 'Cet email est déjà utilisé.';
+    }
+    return 'Erreur: Réessayez.';
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(sessionControllerProvider);
@@ -194,7 +211,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           if (session.hasError) ...[
             const SizedBox(height: 12),
             Text(
-              session.error.toString(),
+              _formatErrorMessage(session.error),
               style: const TextStyle(color: Colors.redAccent),
             ),
           ],

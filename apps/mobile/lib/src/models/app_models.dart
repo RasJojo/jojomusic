@@ -3,19 +3,29 @@ class UserProfile {
     required this.id,
     required this.name,
     required this.email,
+    this.createdAt,
   });
 
   final String id;
   final String name;
   final String email;
+  final DateTime? createdAt;
 
   factory UserProfile.fromJson(Map<String, dynamic> json) => UserProfile(
     id: json['id'] as String,
     name: json['name'] as String,
     email: json['email'] as String,
+    createdAt: json['created_at'] == null
+        ? null
+        : DateTime.tryParse(json['created_at'] as String),
   );
 
-  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'email': email};
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'email': email,
+    if (createdAt != null) 'created_at': createdAt?.toIso8601String(),
+  };
 }
 
 const favoritesPlaylistId = '__favorites__';
@@ -540,6 +550,7 @@ class ResolvedStream {
     required this.streamUrl,
     required this.title,
     required this.artist,
+    this.source,
     this.webpageUrl,
     this.thumbnailUrl,
     this.durationMs,
@@ -548,6 +559,7 @@ class ResolvedStream {
   final String streamUrl;
   final String title;
   final String artist;
+  final String? source;
   final String? webpageUrl;
   final String? thumbnailUrl;
   final int? durationMs;
@@ -556,6 +568,7 @@ class ResolvedStream {
     streamUrl: json['stream_url'] as String,
     title: json['title'] as String,
     artist: json['artist'] as String,
+    source: json['source'] as String?,
     webpageUrl: json['webpage_url'] as String?,
     thumbnailUrl: json['thumbnail_url'] as String?,
     durationMs: json['duration_ms'] as int?,
