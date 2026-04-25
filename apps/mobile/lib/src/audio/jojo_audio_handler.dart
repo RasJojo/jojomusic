@@ -750,7 +750,9 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   @override
   Future<void> onTaskRemoved() async {
     _completionWatchdog.cancel();
-    await super.onTaskRemoved();
+    mediaItem.close();
+    playbackState.close();
+    queue.close();
   }
 }
 
