@@ -1,9 +1,9 @@
 {
   "app": {
     "name": "JojoMusique",
-    "version": "1.0.0",
-    "build": 1,
-    "releaseDate": "2026-04-24T16:30:00Z",
+    "version": "1.0.1",
+    "build": 2,
+    "releaseDate": "2026-04-25T08:18:00Z",
     "description": "Plateforme musicale self-hosted avec recherche multi-source, lecteur audio natif, et synchronisation cross-device"
   },
   "builds": {
@@ -11,10 +11,10 @@
       "name": "Android APK",
       "size": "60 MB",
       "url": "/downloads/JojoMusique-android.apk",
-      "releaseDate": "2026-04-24",
+      "releaseDate": "2026-04-25",
       "status": "available",
       "minApiLevel": 24,
-      "sha256": "f559190b1ebea17bda0b8eec1f11584025314a0346db99a7ce9a12f4aabcb79c"
+      "sha256": "2cef5ed61aebdd00aceccb21b3d74942fc8ba43b3967e4f7c2e099b2c4f4b24b"
     },
     "web": {
       "name": "Web Version",
