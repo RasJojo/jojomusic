@@ -49,7 +49,8 @@ class _BootstrapAppState extends State<_BootstrapApp> {
               config: const AudioServiceConfig(
                 androidNotificationChannelId: 'com.jojomusic.playback',
                 androidNotificationChannelName: 'JojoMusique Playback',
-                androidNotificationOngoing: true,
+                androidStopForegroundOnPause: false,
+                androidResumeOnClick: true,
               ),
             );
       return _BootstrapData(
