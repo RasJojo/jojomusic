@@ -38,7 +38,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         unawaited(_handleQueueCompletion());
       }
     });
-    _completionWatchdog = Timer.periodic(const Duration(milliseconds: 900), (_) {
+    Timer.periodic(const Duration(milliseconds: 900), (_) {
       _watchdogForCompletion();
     });
   }
@@ -56,7 +56,6 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   final Map<String, Future<ResolvedStream>> _resolveInFlight = {};
   final Map<String, LyricsData?> _lyricsCache = {};
   final Map<String, Future<LyricsData?>> _lyricsInFlight = {};
-  late final Timer _completionWatchdog;
   int _currentIndex = -1;
   int _completionCallToken = 0;
   bool _autoplayEnabled = true;
@@ -758,11 +757,9 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
 
   @override
   Future<void> onTaskRemoved() async {
-    _completionWatchdog.cancel();
-    await _player.dispose();
-    mediaItem.close();
-    playbackState.close();
-    queue.close();
+    // Ne rien détruire — la lecture doit continuer en arrière-plan.
+    // Le player et les streams restent actifs pour permettre la lecture
+    // depuis la notification quand l'app n'est plus au premier plan.
   }
 }
 

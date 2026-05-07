@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-jojomusic}
       POSTGRES_USER: ${POSTGRES_USER:-jojomusic}
@@ -12,16 +13,22 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    networks:
+      - caddy
 
   resolver-api:
     build:
       context: ./services/resolver_api
+    restart: unless-stopped
     environment:
       RESOLVER_TIMEOUT_SECONDS: ${RESOLVER_TIMEOUT_SECONDS:-25}
+    networks:
+      - caddy
 
   media-worker:
     build:
       context: ./services/media_worker
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-jojomusic}:${POSTGRES_PASSWORD:-jojomusic}@postgres:5432/${POSTGRES_DB:-jojomusic}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
@@ -39,23 +46,32 @@ services:
     volumes:
       - audio_cache:/data/audio_cache
       - image_cache:/data/image_cache
+    networks:
+      - caddy
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     volumes:
       - redis_data:/data
+    networks:
+      - caddy
 
   meilisearch:
     image: getmeili/meilisearch:v1.15
+    restart: unless-stopped
     environment:
       MEILI_NO_ANALYTICS: "true"
       MEILI_MASTER_KEY: ${MEILISEARCH_API_KEY:-jojomusic-server-key}
     volumes:
       - meilisearch_data:/meili_data
+    networks:
+      - caddy
 
   core-api:
     build:
       context: ./services/core_api_nest
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-jojomusic}:${POSTGRES_PASSWORD:-jojomusic}@postgres:5432/${POSTGRES_DB:-jojomusic}
       JWT_SECRET: ${JWT_SECRET}
@@ -75,7 +91,7 @@ services:
       MEDIA_QUEUE_KEY: ${MEDIA_QUEUE_KEY:-media:ingest}
       IMAGE_CACHE_DIR: ${IMAGE_CACHE_DIR:-/data/image_cache}
       IMAGE_QUEUE_KEY: ${IMAGE_QUEUE_KEY:-image:ingest}
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://jojomusic-web.vercel.app,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8877,http://127.0.0.1:8877}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://jojomusic-web.vercel.app,http://localhost:3000,http://127.0.0.1:3000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,11 +103,18 @@ services:
         condition: service_started
       meilisearch:
         condition: service_started
-    ports:
-      - "${PUBLIC_API_BIND:-127.0.0.1}:${PUBLIC_API_PORT:-18000}:8000"
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.jojomusic.rule: "Host(`jojomusicapi.jojoserv.com`)"
+      traefik.http.routers.jojomusic.entrypoints: "websecure"
+      traefik.http.routers.jojomusic.tls.certresolver: "letsencrypt"
+      traefik.http.services.jojomusic.loadbalancer.server.port: "8000"
+      traefik.docker.network: "caddy"
     volumes:
       - audio_cache:/data/audio_cache
       - image_cache:/data/image_cache
+    networks:
+      - caddy
 
 volumes:
   postgres_data:
@@ -99,4 +122,7 @@ volumes:
   meilisearch_data:
   audio_cache:
   image_cache:
-# Server
+
+networks:
+  caddy:
+    external: true
