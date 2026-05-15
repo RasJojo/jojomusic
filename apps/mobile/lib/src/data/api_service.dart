@@ -333,6 +333,18 @@ class ApiService {
     }
     return LyricsData.fromJson(data);
   }
+
+  Future<String?> fetchTrackArtwork(String artist, String title) async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>(
+        '/api/v1/tracks/artwork',
+        queryParameters: {'artist': artist, 'title': title},
+      );
+      return response.data?['artwork_url'] as String?;
+    } catch (_) {
+      return null;
+    }
+  }
 }
 
 class _SearchCacheEntry {
