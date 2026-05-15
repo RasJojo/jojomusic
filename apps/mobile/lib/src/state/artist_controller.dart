@@ -1,11 +1,25 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../models/app_models.dart';
+import '../data/ytmusic/ytmusic_models.dart';
 import 'providers.dart';
 
-final artistDetailsProvider = FutureProvider.family<ArtistDetails, String>((
+final ytArtistDetailProvider = FutureProvider.family<YtArtistDetail?, String>((
   ref,
-  artistName,
+  browseId,
 ) {
-  return ref.watch(apiProvider).fetchArtistDetails(artistName);
+  if (browseId.isEmpty) return Future.value(null);
+  return ref.watch(ytMusicClientProvider).fetchArtist(browseId);
+});
+
+final ytArtistByNameProvider = FutureProvider.family<YtArtistDetail?, String>((
+  ref,
+  name,
+) async {
+  if (name.isEmpty) return null;
+  final client = ref.watch(ytMusicClientProvider);
+  final results = await client.search(name);
+  final firstArtist =
+      results.artists.isNotEmpty ? results.artists.first : null;
+  if (firstArtist == null) return null;
+  return client.fetchArtist(firstArtist.browseId);
 });

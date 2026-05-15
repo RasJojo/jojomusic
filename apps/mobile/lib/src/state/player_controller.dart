@@ -4,6 +4,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/canvas_service.dart';
 import '../models/app_models.dart';
 import 'home_controller.dart';
 import 'providers.dart';
@@ -20,8 +21,53 @@ final currentQueueProvider = StreamProvider<List<MediaItem>>((ref) {
   return ref.watch(audioHandlerProvider).queue;
 });
 
+final shuffleActiveProvider = StreamProvider<bool>((ref) {
+  return ref
+      .watch(audioHandlerProvider)
+      .playbackState
+      .map((s) => s.shuffleMode != AudioServiceShuffleMode.none);
+});
+
+final repeatModeProvider = StreamProvider<AudioServiceRepeatMode>((ref) {
+  return ref.watch(audioHandlerProvider).playbackState.map((s) => s.repeatMode);
+});
+
+final sleepTimerProvider =
+    NotifierProvider<SleepTimerNotifier, DateTime?>(SleepTimerNotifier.new);
+
+class SleepTimerNotifier extends Notifier<DateTime?> {
+  Timer? _timer;
+
+  @override
+  DateTime? build() {
+    ref.onDispose(() => _timer?.cancel());
+    return null;
+  }
+
+  void set(Duration duration) {
+    _timer?.cancel();
+    final endTime = DateTime.now().add(duration);
+    state = endTime;
+    _timer = Timer(duration, () {
+      ref.read(audioHandlerProvider).pause();
+      state = null;
+    });
+  }
+
+  void cancel() {
+    _timer?.cancel();
+    state = null;
+  }
+}
+
 final playerControllerProvider = Provider<PlayerController>((ref) {
   return PlayerController(ref);
+});
+
+final canvasUrlProvider =
+    FutureProvider.autoDispose.family<String?, String>((ref, videoId) {
+  if (videoId.isEmpty) return Future.value(null);
+  return CanvasService().getCanvasUrl(videoId);
 });
 
 final pendingTrackKeyListenable = ValueNotifier<String?>(null);
@@ -136,6 +182,12 @@ class PlayerController {
   Future<void> playQueueItem(int index) =>
       ref.read(audioHandlerProvider).skipToQueueItem(index);
 
+  Future<void> toggleShuffle() =>
+      ref.read(audioHandlerProvider).toggleShuffle();
+
+  Future<void> cycleRepeatMode() =>
+      ref.read(audioHandlerProvider).cycleRepeatMode();
+
   Track? currentQueueTrack() => ref.read(audioHandlerProvider).currentTrack;
 
   Future<LyricsData?> fetchLyricsForCurrentTrack() async {
@@ -174,6 +226,23 @@ class PlayerController {
   Future<void> prewarmTrack(Track track) {
     return ref.read(audioHandlerProvider).prewarmTrack(track);
   }
+
+  Future<void> setSpeed(double speed) =>
+      ref.read(audioHandlerProvider).setSpeed(speed);
+
+  void reorderQueue(int oldIndex, int newIndex) {
+    if (newIndex > oldIndex) newIndex--;
+    ref.read(audioHandlerProvider).reorderQueue(oldIndex, newIndex);
+  }
+
+  void setSponsorBlockEnabled(bool enabled) =>
+      ref.read(audioHandlerProvider).setSponsorBlockEnabled(enabled);
+
+  void setCrossfadeEnabled(bool enabled) =>
+      ref.read(audioHandlerProvider).setCrossfadeEnabled(enabled);
+
+  void setCrossfadeDuration(int seconds) =>
+      ref.read(audioHandlerProvider).setCrossfadeDuration(seconds);
 
   Future<void> preloadLyricsForMediaItem(MediaItem mediaItem) {
     final track = Track(
