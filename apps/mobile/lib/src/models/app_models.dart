@@ -133,12 +133,14 @@ class Track {
   final String? previewUrl;
   final bool lyricsSyncedAvailable;
 
+  static final _ytIdRe = RegExp(r'^[a-zA-Z0-9_-]{11}$');
+
   String? get displayArtworkUrl {
-    if (artworkUrl != null && artworkUrl!.isNotEmpty) {
-      return artworkUrl;
-    }
-    if (artistImageUrl != null && artistImageUrl!.isNotEmpty) {
-      return artistImageUrl;
+    if (artworkUrl != null && artworkUrl!.isNotEmpty) return artworkUrl;
+    if (artistImageUrl != null && artistImageUrl!.isNotEmpty) return artistImageUrl;
+    final vid = (externalId != null && externalId!.isNotEmpty) ? externalId! : trackKey;
+    if (_ytIdRe.hasMatch(vid)) {
+      return 'https://i.ytimg.com/vi/$vid/hqdefault.jpg';
     }
     return null;
   }
@@ -267,6 +269,18 @@ class Album {
         : DateTime.tryParse(json['release_date'] as String),
     trackCount: json['track_count'] as int?,
   );
+
+  Map<String, dynamic> toJson() => {
+    'album_key': albumKey,
+    'title': title,
+    'artist': artist,
+    'artwork_url': artworkUrl,
+    'provider': provider,
+    'external_id': externalId,
+    'summary': summary,
+    'release_date': releaseDate?.toIso8601String(),
+    'track_count': trackCount,
+  };
 }
 
 class Podcast {
@@ -391,14 +405,14 @@ class GeneratedPlaylist {
   const GeneratedPlaylist({
     required this.playlistKey,
     required this.title,
-    required this.subtitle,
     required this.tracks,
+    this.subtitle,
     this.artworkUrl,
   });
 
   final String playlistKey;
   final String title;
-  final String subtitle;
+  final String? subtitle;
   final List<Track> tracks;
   final String? artworkUrl;
 
@@ -419,7 +433,7 @@ class GeneratedPlaylist {
       GeneratedPlaylist(
         playlistKey: json['playlist_key'] as String,
         title: json['title'] as String,
-        subtitle: json['subtitle'] as String,
+        subtitle: json['subtitle'] as String?,
         artworkUrl: json['artwork_url'] as String?,
         tracks: (json['tracks'] as List<dynamic>? ?? [])
             .map((item) => Track.fromJson(item as Map<String, dynamic>))

@@ -4,9 +4,31 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/ytmusic/ytmusic_models.dart';
 import '../models/app_models.dart';
 import 'providers.dart';
 import 'session_controller.dart';
+
+// ─── YouTube Music home feed ─────────────────────────────────────────────────
+
+final ytHomeFeedProvider =
+    AsyncNotifierProvider<YtHomeFeedNotifier, YtHomeFeed>(
+  YtHomeFeedNotifier.new,
+);
+
+class YtHomeFeedNotifier extends AsyncNotifier<YtHomeFeed> {
+  @override
+  Future<YtHomeFeed> build() async {
+    return ref.watch(ytMusicClientProvider).fetchHome();
+  }
+
+  Future<void> refresh() async {
+    state = const AsyncLoading();
+    state = await AsyncValue.guard(
+      () => ref.read(ytMusicClientProvider).fetchHome(),
+    );
+  }
+}
 
 final homeControllerProvider = AsyncNotifierProvider<HomeController, HomeData>(
   HomeController.new,

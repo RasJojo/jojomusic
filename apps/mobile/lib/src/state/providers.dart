@@ -6,6 +6,7 @@ import '../audio/jojo_audio_handler.dart';
 import '../config/app_environment.dart';
 import '../data/api_service.dart';
 import '../data/app_database.dart';
+import '../data/ytmusic/ytmusic_client.dart';
 import 'session_controller.dart';
 
 final environmentProvider = Provider<AppEnvironment>((ref) {
@@ -43,6 +44,10 @@ final connectivityStatusProvider = StreamProvider<bool>((ref) async* {
 final apiProvider = Provider<ApiService>((ref) {
   final session = ref.watch(sessionControllerProvider).asData?.value;
   return ref.watch(baseApiProvider).withToken(session?.accessToken);
+});
+
+final ytMusicClientProvider = Provider<YtMusicClient>((ref) {
+  return YtMusicClient();
 });
 
 final shellTabIndexProvider = NotifierProvider<ShellTabIndexNotifier, int>(

@@ -15,14 +15,19 @@ class LibraryState {
     required this.likes,
     required this.playlists,
     required this.followedPodcasts,
+    this.savedAlbums = const [],
   });
 
   final List<Track> likes;
   final List<Playlist> playlists;
   final List<Podcast> followedPodcasts;
+  final List<Album> savedAlbums;
 
   bool isLiked(Track track) =>
       likes.any((item) => item.trackKey == track.trackKey);
+
+  bool isAlbumSaved(String albumKey) =>
+      savedAlbums.any((a) => a.albumKey == albumKey);
 
   Set<String> playlistIdsForTrack(Track track) => {
     for (final playlist in playlists)
@@ -60,6 +65,7 @@ class LibraryState {
 }
 
 const _libraryCacheKeyPrefix = 'jojomusic.library.cache';
+const _savedAlbumsKey = 'jojomusic.saved_albums';
 const _libraryFetchTimeout = Duration(seconds: 8);
 
 final libraryControllerProvider =
@@ -247,10 +253,54 @@ class LibraryController extends AsyncNotifier<LibraryState> {
       api.fetchPlaylists(),
       api.fetchFollowedPodcasts(),
     ]);
+    final savedAlbums = await _loadSavedAlbums();
     return LibraryState(
       likes: results[0] as List<Track>,
       playlists: results[1] as List<Playlist>,
       followedPodcasts: results[2] as List<Podcast>,
+      savedAlbums: savedAlbums,
+    );
+  }
+
+  Future<List<Album>> _loadSavedAlbums() async {
+    final encoded =
+        ref.read(sharedPreferencesProvider).getString(_savedAlbumsKey);
+    if (encoded == null || encoded.isEmpty) return [];
+    try {
+      final list = jsonDecode(encoded) as List<dynamic>;
+      return list
+          .map((e) => Album.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> _persistSavedAlbums(List<Album> albums) async {
+    await ref.read(sharedPreferencesProvider).setString(
+      _savedAlbumsKey,
+      jsonEncode(albums.map((a) => a.toJson()).toList()),
+    );
+  }
+
+  Future<void> toggleSaveAlbum(Album album) async {
+    final current = state.asData?.value;
+    if (current == null) return;
+    final saved = List<Album>.from(current.savedAlbums);
+    final idx = saved.indexWhere((a) => a.albumKey == album.albumKey);
+    if (idx >= 0) {
+      saved.removeAt(idx);
+    } else {
+      saved.insert(0, album);
+    }
+    await _persistSavedAlbums(saved);
+    state = AsyncData(
+      LibraryState(
+        likes: current.likes,
+        playlists: current.playlists,
+        followedPodcasts: current.followedPodcasts,
+        savedAlbums: saved,
+      ),
     );
   }
 
@@ -317,10 +367,12 @@ class LibraryController extends AsyncNotifier<LibraryState> {
       final followedPodcasts = (json['followed_podcasts'] as List<dynamic>? ?? [])
           .map((item) => Podcast.fromJson(item as Map<String, dynamic>))
           .toList();
+      final savedAlbums = await _loadSavedAlbums();
       return LibraryState(
         likes: likes,
         playlists: playlists,
         followedPodcasts: followedPodcasts,
+        savedAlbums: savedAlbums,
       );
     } catch (_) {
       return null;
