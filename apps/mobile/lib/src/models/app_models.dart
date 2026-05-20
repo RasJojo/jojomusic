@@ -31,20 +31,31 @@ class UserProfile {
 const favoritesPlaylistId = '__favorites__';
 
 class AuthSession {
-  const AuthSession({required this.accessToken, required this.user});
+  const AuthSession({
+    required this.accessToken,
+    required this.user,
+    this.convexUserId,
+  });
 
   final String accessToken;
   final UserProfile user;
+  /// Convex _id — null pour les sessions créées avant la migration Convex
+  final String? convexUserId;
 
   factory AuthSession.fromJson(Map<String, dynamic> json) => AuthSession(
     accessToken: json['access_token'] as String,
     user: UserProfile.fromJson(json['user'] as Map<String, dynamic>),
+    convexUserId: json['convex_user_id'] as String?,
   );
 
   Map<String, dynamic> toJson() => {
     'access_token': accessToken,
     'user': user.toJson(),
+    if (convexUserId != null) 'convex_user_id': convexUserId,
   };
+
+  AuthSession withConvexUserId(String id) =>
+      AuthSession(accessToken: accessToken, user: user, convexUserId: id);
 }
 
 class SpotifyIntegration {

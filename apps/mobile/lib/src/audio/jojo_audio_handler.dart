@@ -6,8 +6,14 @@ import 'package:drift/drift.dart' show Value;
 import 'package:just_audio/just_audio.dart' as ja;
 
 import '../config/app_environment.dart';
-import '../data/app_database.dart';
 import '../data/api_service.dart';
+import '../data/app_database.dart';
+import '../data/artwork_cache.dart';
+import '../data/convex_service.dart';
+import '../data/lrclib_service.dart';
+import '../data/sponsorblock_service.dart';
+import '../data/stream_resolver.dart';
+import '../data/ytmusic/ytmusic_client.dart';
 import '../models/app_models.dart';
 
 class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
@@ -18,6 +24,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
        _database = database,
        _player = ja.AudioPlayer() {
     _api = ApiService(environment: _environment);
+    _localResolver = LocalStreamResolver();
+    _ytClient = YtMusicClient();
+    _lrclibService = LrclibService();
+    _sponsorBlockService = SponsorBlockService();
     _player.playerStateStream.listen(_broadcastState);
     _player.durationStream.listen((duration) {
       if (duration != null) {
@@ -32,6 +42,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         ),
       );
       _maybeHandleImplicitCompletion(position: position);
+      if (_sponsorBlockEnabled) _checkSponsorSegment(position);
+      if (_crossfadeEnabled) _maybeTriggerCrossfade(position);
     });
     _player.processingStateStream.distinct().listen((state) {
       if (state == ja.ProcessingState.completed) {
@@ -47,13 +59,28 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     _api = ApiService(environment: _environment, accessToken: token);
   }
 
+  /// Appelé depuis app.dart quand l'utilisateur se connecte.
+  void setConvexService(ConvexService service, String userId) {
+    _convexService = service;
+    _convexUserId = userId;
+  }
+
+  void clearConvexService() {
+    _convexService = null;
+    _convexUserId = null;
+  }
+
   final AppEnvironment _environment;
   final AppDatabase _database;
   final ja.AudioPlayer _player;
   late ApiService _api;
+  late LocalStreamResolver _localResolver;
+  ConvexService? _convexService;
+  String? _convexUserId;
+  DateTime? _lastConvexPositionSync;
+  DateTime? _trackStartTime;
+  late YtMusicClient _ytClient;
   final List<Track> _queueTracks = [];
-  final Map<String, _ResolvedTrackCacheEntry> _resolvedTrackCache = {};
-  final Map<String, Future<ResolvedStream>> _resolveInFlight = {};
   final Map<String, LyricsData?> _lyricsCache = {};
   final Map<String, Future<LyricsData?>> _lyricsInFlight = {};
   int _currentIndex = -1;
@@ -61,6 +88,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   bool _autoplayEnabled = true;
   bool _isExtendingQueue = false;
   bool _pauseRequestedManually = false;
+  bool _shuffleEnabled = false;
+  AudioServiceRepeatMode _repeatMode = AudioServiceRepeatMode.none;
   String? _lastAutoplaySeedKey;
   String? _completionGuardTrackKey;
   DateTime? _completionGuardAt;
@@ -68,7 +97,22 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   int? _lastProgressPositionMs;
   DateTime? _lastProgressAt;
   int _loadGeneration = 0;
+  bool _isLoadingTrack = false;
   Future<void> _playerMutationChain = Future<void>.value();
+
+  late LrclibService _lrclibService;
+  late SponsorBlockService _sponsorBlockService;
+  bool _sponsorBlockEnabled = false;
+  List<SponsorSegment> _currentSegments = [];
+  bool _isSkippingSegment = false;
+
+  bool _crossfadeEnabled = false;
+  int _crossfadeDurationSeconds = 5;
+  Timer? _crossfadeTimer;
+  double _crossfadeVolume = 1.0;
+  bool _fadeInActive = false;
+
+  final Map<String, Future<ResolvedStream>> _resolveInFlight = {};
 
   Future<void> loadQueue(
     List<Track> tracks, {
@@ -78,13 +122,19 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     if (tracks.isEmpty) {
       return;
     }
+    // Reset chain so a previously hung setUrl can't block new playback requests.
+    _playerMutationChain = Future<void>.value();
     _autoplayEnabled = autoplay;
     _lastAutoplaySeedKey = null;
     _queueTracks
       ..clear()
       ..addAll(tracks);
     queue.add(_buildQueueMediaItems());
-    await _loadAt(initialIndex);
+    try {
+      await _loadAt(initialIndex);
+    } catch (_) {
+      // Stream resolve or player error on initial load — watchdog handles recovery
+    }
   }
 
   Future<LyricsData?> fetchLyricsForTrack(
@@ -102,7 +152,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       return pending;
     }
 
-    final future = _api.fetchLyrics(track);
+    final future = _fetchLyricsWithFallback(track);
     _lyricsInFlight[track.trackKey] = future;
     try {
       final lyrics = await future;
@@ -196,8 +246,32 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   @override
   Future<void> seek(Duration position) => _player.seek(position);
 
+  Future<void> toggleShuffle() async {
+    _shuffleEnabled = !_shuffleEnabled;
+    _broadcastState(_player.playerState);
+  }
+
+  Future<void> cycleRepeatMode() async {
+    switch (_repeatMode) {
+      case AudioServiceRepeatMode.none:
+        _repeatMode = AudioServiceRepeatMode.all;
+      case AudioServiceRepeatMode.all:
+        _repeatMode = AudioServiceRepeatMode.one;
+      default:
+        _repeatMode = AudioServiceRepeatMode.none;
+    }
+    _broadcastState(_player.playerState);
+  }
+
   @override
   Future<void> skipToNext() async {
+    if (_shuffleEnabled && _queueTracks.length > 1) {
+      final candidates = List.generate(_queueTracks.length, (i) => i)
+          .where((i) => i != _currentIndex)
+          .toList()..shuffle();
+      await _loadAt(candidates.first);
+      return;
+    }
     if (_currentIndex < _queueTracks.length - 1) {
       await _loadAt(_currentIndex + 1);
       return;
@@ -226,6 +300,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   Future<void> _loadAt(int index) async {
+    _isLoadingTrack = true;
+    _cancelCrossfade();
     final loadGeneration = ++_loadGeneration;
     _currentIndex = index;
     _completionGuardTrackKey = null;
@@ -234,52 +310,70 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     _lastProgressPositionMs = 0;
     _lastProgressAt = DateTime.now();
     _pauseRequestedManually = false;
+    _trackStartTime = DateTime.now();
     final track = _queueTracks[index];
-    await _safeStopPlayer();
-    _broadcastLoadingState();
-    final offline = await _database.findOfflineTrack(track.trackKey);
-    final offlinePath = await _readyOfflinePath(offline);
-    ResolvedStream? resolved;
-    final source = offlinePath != null
-        ? Uri.file(offlinePath).toString()
-        : (resolved = await _resolveTrack(track)).streamUrl;
+    // Sync état de lecture vers Convex (nouveau morceau)
+    _syncPlaybackState(forcePosition: true);
+    try {
+      await _safeStopPlayer();
+      _broadcastLoadingState();
+      mediaItem.add(_toMediaItem(track, index: index));
+      final offline = await _database.findOfflineTrack(track.trackKey);
+      final offlinePath = await _readyOfflinePath(offline);
+      ResolvedStream? resolved;
+      final source = offlinePath != null
+          ? Uri.file(offlinePath).toString()
+          : (resolved = await _resolveTrack(track)).streamUrl;
 
-    if (loadGeneration != _loadGeneration) {
-      return;
-    }
-
-    if (resolved != null) {
-      _syncCurrentTrackMetadata(
-        artworkUrl: resolved.thumbnailUrl,
-        durationMs: resolved.durationMs,
-      );
-    }
-
-    await _mutatePlayer(() async {
       if (loadGeneration != _loadGeneration) {
         return;
       }
 
-      if (source.startsWith('file://')) {
-        await _player.setFilePath(Uri.parse(source).toFilePath());
-      } else {
-        await _player.setUrl(source);
+      if (resolved != null) {
+        if (resolved.thumbnailUrl != null) {
+          resolvedArtworkCache[track.trackKey] = resolved.thumbnailUrl!;
+        }
+        _syncCurrentTrackMetadata(
+          artworkUrl: resolved.thumbnailUrl,
+          durationMs: resolved.durationMs,
+        );
       }
 
-      if (loadGeneration != _loadGeneration) {
-        await _safeStopPlayer();
-        return;
-      }
+      await _mutatePlayer(() async {
+        if (loadGeneration != _loadGeneration) {
+          return;
+        }
 
-      mediaItem.add(_toMediaItem(_queueTracks[index], index: index));
-      _broadcastState(_player.playerState);
-      unawaited(preloadLyricsForTrack(track));
-      unawaited(_prefetchQueueAround(index));
-      if (!_pauseRequestedManually) {
-        await _player.play();
-      }
-      _broadcastState(_player.playerState);
-    });
+        if (source.startsWith('file://')) {
+          await _player.setFilePath(Uri.parse(source).toFilePath());
+        } else {
+          await _player.setUrl(source).timeout(const Duration(seconds: 20));
+        }
+
+        if (loadGeneration != _loadGeneration) {
+          await _safeStopPlayer();
+          return;
+        }
+
+        mediaItem.add(_toMediaItem(_queueTracks[index], index: index));
+        _broadcastState(_player.playerState);
+        unawaited(preloadLyricsForTrack(track));
+        unawaited(_prefetchQueueAround(index));
+        final videoId = track.externalId ?? track.trackKey;
+        if (_sponsorBlockEnabled && RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(videoId)) {
+          unawaited(_loadSponsorSegments(videoId));
+        } else {
+          _currentSegments = [];
+        }
+        if (!_pauseRequestedManually) {
+          if (_crossfadeEnabled) _startFadeIn();
+          await _player.play();
+        }
+        _broadcastState(_player.playerState);
+      });
+    } finally {
+      _isLoadingTrack = false;
+    }
   }
 
   Future<void> _safeStopPlayer() async {
@@ -401,42 +495,29 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     return 'm4a';
   }
 
-  Future<ResolvedStream> _resolveTrack(Track track) async {
-    final cached = _resolvedTrackCache[track.trackKey];
-    if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
-      return cached.stream;
-    }
+  Future<ResolvedStream> _resolveTrack(Track track) {
+    final inFlight = _resolveInFlight[track.trackKey];
+    if (inFlight != null) return inFlight;
 
-    final inflight = _resolveInFlight[track.trackKey];
-    if (inflight != null) {
-      return inflight;
-    }
-
-    final future = _api.resolveTrack(track);
+    final future = _doResolveTrack(track);
     _resolveInFlight[track.trackKey] = future;
+    return future.whenComplete(() => _resolveInFlight.remove(track.trackKey));
+  }
+
+  Future<ResolvedStream> _doResolveTrack(Track track) async {
     try {
-      final resolved = await future;
-      _resolvedTrackCache[track.trackKey] = _ResolvedTrackCacheEntry(
-        stream: resolved,
-        expiresAt: DateTime.now().add(const Duration(minutes: 18)),
-      );
-      return resolved;
-    } finally {
-      _resolveInFlight.remove(track.trackKey);
+      return await _api.resolveTrack(track);
+    } catch (_) {
+      return _localResolver.resolve(track)
+          .timeout(const Duration(seconds: 20));
     }
   }
 
   Future<void> _prefetchQueueAround(int index) async {
-    final upcoming = <Track>[];
     for (final offset in [1, 2]) {
       final nextIndex = index + offset;
       if (nextIndex >= 0 && nextIndex < _queueTracks.length) {
-        upcoming.add(_queueTracks[nextIndex]);
-      }
-    }
-    for (final track in upcoming) {
-      if (!_resolvedTrackCache.containsKey(track.trackKey)) {
-        unawaited(_resolveTrack(track));
+        unawaited(_resolveTrack(_queueTracks[nextIndex]));
       }
     }
     if (_autoplayEnabled && _queueTracks.length - index <= 3) {
@@ -445,11 +526,37 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   Future<void> _handleQueueCompletion() async {
+    // Enregistre l'événement de complétion dans Convex (fire-and-forget)
+    _recordPlaybackEvent('completed');
     final token = ++_completionCallToken;
     try {
+      if (_repeatMode == AudioServiceRepeatMode.one) {
+        await _player.seek(Duration.zero);
+        unawaited(_player.play());
+        return;
+      }
+      if (_shuffleEnabled && _queueTracks.length > 1) {
+        final candidates = List.generate(_queueTracks.length, (i) => i)
+            .where((i) => i != _currentIndex)
+            .toList()..shuffle();
+        await _loadAt(candidates.first);
+        return;
+      }
+      if (_repeatMode == AudioServiceRepeatMode.all &&
+          _currentIndex >= _queueTracks.length - 1) {
+        if (token != _completionCallToken) return;
+        await _loadAt(0);
+        return;
+      }
       if (_currentIndex < _queueTracks.length - 1) {
         await _tryLoadNext(token);
       } else if (_autoplayEnabled) {
+        // Wait for any in-flight queue extension before deciding to stop.
+        if (_isExtendingQueue) {
+          for (int i = 0; i < 20 && _isExtendingQueue; i++) {
+            await Future<void>.delayed(const Duration(milliseconds: 250));
+          }
+        }
         await _ensureAutoplayTail(seed: currentTrack);
         if (_currentIndex < _queueTracks.length - 1) {
           await _tryLoadNext(token);
@@ -465,15 +572,23 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   Future<void> _tryLoadNext(int token) async {
-    for (int attempts = 0; attempts < 3; attempts++) {
+    // Try up to 3 consecutive tracks starting from the next one.
+    // If a track fails to load (network / stream error), skip it and try the
+    // next one rather than stopping — this prevents silence mid-playlist.
+    final startIndex = _currentIndex + 1;
+    for (int skip = 0; skip < 3; skip++) {
+      final candidateIndex = startIndex + skip;
+      if (candidateIndex >= _queueTracks.length) break;
       if (_completionCallToken != token) return;
-      final nextIndex = _currentIndex + 1;
-      if (nextIndex >= _queueTracks.length) break;
-      try {
-        await _loadAt(nextIndex);
-        return;
-      } catch (_) {
-        continue;
+      // Two attempts per candidate (transient network errors).
+      for (int attempt = 0; attempt < 2; attempt++) {
+        if (_completionCallToken != token) return;
+        try {
+          await _loadAt(candidateIndex);
+          return;
+        } catch (_) {
+          continue;
+        }
       }
     }
     if (_completionCallToken == token) {
@@ -512,7 +627,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   void _watchdogForCompletion() {
-    if (_pauseRequestedManually) {
+    if (_pauseRequestedManually || _isLoadingTrack) {
       return;
     }
     final track = currentTrack;
@@ -530,15 +645,27 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         _player.processingState != ja.ProcessingState.loading &&
         _player.processingState != ja.ProcessingState.buffering;
     final looksStalledAtTail =
-        remaining <= const Duration(seconds: 3) &&
-        _progressHasStalled(track.trackKey, position, const Duration(seconds: 2));
+        remaining <= const Duration(milliseconds: 1500) &&
+        !_player.playing &&
+        _player.processingState != ja.ProcessingState.loading &&
+        _player.processingState != ja.ProcessingState.buffering &&
+        _progressHasStalled(track.trackKey, position, const Duration(seconds: 3));
 
     final looksStalledMidTrack =
         _player.playing &&
         _player.processingState == ja.ProcessingState.buffering &&
         _progressHasStalled(track.trackKey, position, const Duration(seconds: 8));
 
-    if (!looksFinished && !looksStalledAtTail && !looksStalledMidTrack) {
+    // Stream URL died mid-track (network cut, expired URL): player stopped
+    // unexpectedly without reaching end → re-resolve and restart the track.
+    final looksDeadMidTrack =
+        !_player.playing &&
+        !_pauseRequestedManually &&
+        remaining > const Duration(seconds: 5) &&
+        _player.processingState == ja.ProcessingState.idle &&
+        _progressHasStalled(track.trackKey, position, const Duration(seconds: 4));
+
+    if (!looksFinished && !looksStalledAtTail && !looksStalledMidTrack && !looksDeadMidTrack) {
       return;
     }
 
@@ -553,6 +680,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
 
     if (looksStalledMidTrack) {
       unawaited(_player.play());
+    } else if (looksDeadMidTrack) {
+      // Re-resolve stream from scratch (clears hung mutation chain too).
+      _playerMutationChain = Future<void>.value();
+      unawaited(_loadAt(_currentIndex));
     } else {
       unawaited(_handleQueueCompletion());
     }
@@ -612,20 +743,24 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       return;
     }
 
+    final videoId = seedTrack.externalId ?? seedTrack.trackKey;
+    final isYtId = RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(videoId);
+    if (!isYtId) return;
+
     _isExtendingQueue = true;
     try {
-      final tracks = await _api.fetchSimilarTracks(
-        seedTrack,
-        limit: 10,
-        excludeTrackKeys: _queueTracks
-            .map((track) => track.trackKey)
-            .toList(growable: false),
-      );
-      if (tracks.isEmpty) {
-        return;
-      }
+      final existingKeys = _queueTracks
+          .map((t) => t.trackKey)
+          .toSet();
+      final radioTracks = await _ytClient.fetchRadio(videoId);
+      final newTracks = radioTracks
+          .where((t) => !existingKeys.contains(t.videoId))
+          .take(10)
+          .map((t) => t.toTrack())
+          .toList();
+      if (newTracks.isEmpty) return;
       _lastAutoplaySeedKey = seedTrack.trackKey;
-      _queueTracks.addAll(tracks);
+      _queueTracks.addAll(newTracks);
       queue.add(_buildQueueMediaItems());
       final prefetchIndex = _currentIndex < 0 ? 0 : _currentIndex;
       unawaited(_prefetchQueueAround(prefetchIndex));
@@ -718,8 +853,14 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         bufferedPosition: _player.bufferedPosition,
         speed: _player.speed,
         queueIndex: _currentIndex < 0 ? null : _currentIndex,
+        shuffleMode: _shuffleEnabled
+            ? AudioServiceShuffleMode.all
+            : AudioServiceShuffleMode.none,
+        repeatMode: _repeatMode,
       ),
     );
+    // Sync play/pause vers Convex (throttlé côté _syncPlaybackState)
+    _syncPlaybackState();
   }
 
   void _broadcastLoadingState() {
@@ -756,21 +897,231 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   @override
+  Future<void> setSpeed(double speed) async {
+    await _player.setSpeed(speed.clamp(0.5, 2.0));
+    _broadcastState(_player.playerState);
+  }
+
+  void reorderQueue(int oldIndex, int newIndex) {
+    if (oldIndex < 0 ||
+        newIndex < 0 ||
+        oldIndex >= _queueTracks.length ||
+        newIndex >= _queueTracks.length ||
+        oldIndex == newIndex) {
+      return;
+    }
+    final track = _queueTracks.removeAt(oldIndex);
+    _queueTracks.insert(newIndex, track);
+    if (_currentIndex == oldIndex) {
+      _currentIndex = newIndex;
+    } else if (oldIndex < _currentIndex && newIndex >= _currentIndex) {
+      _currentIndex--;
+    } else if (oldIndex > _currentIndex && newIndex <= _currentIndex) {
+      _currentIndex++;
+    }
+    queue.add(_buildQueueMediaItems());
+  }
+
+  void setSponsorBlockEnabled(bool enabled) {
+    _sponsorBlockEnabled = enabled;
+    if (!enabled) _currentSegments = [];
+  }
+
+  void setCrossfadeEnabled(bool enabled) {
+    _crossfadeEnabled = enabled;
+    if (!enabled) _cancelCrossfade();
+  }
+
+  void setCrossfadeDuration(int seconds) {
+    _crossfadeDurationSeconds = seconds.clamp(1, 10);
+  }
+
+  void _checkSponsorSegment(Duration position) {
+    if (_isSkippingSegment || _currentSegments.isEmpty) return;
+    for (final seg in _currentSegments) {
+      if (seg.contains(position)) {
+        _isSkippingSegment = true;
+        unawaited(
+          _player.seek(seg.end).then((_) => _isSkippingSegment = false),
+        );
+        return;
+      }
+    }
+  }
+
+  Future<void> _loadSponsorSegments(String videoId) async {
+    try {
+      _currentSegments = await _sponsorBlockService.fetchSegments(videoId);
+    } catch (_) {
+      _currentSegments = [];
+    }
+  }
+
+  void _maybeTriggerCrossfade(Duration position) {
+    if (_crossfadeTimer != null) return;
+    final duration = _effectiveTrackDuration();
+    if (duration == null || !_player.playing) return;
+    final remaining = duration - position;
+    final threshold = Duration(seconds: _crossfadeDurationSeconds);
+    if (remaining > Duration.zero && remaining <= threshold) {
+      _startFadeOut();
+    }
+  }
+
+  void _startFadeOut() {
+    _crossfadeTimer?.cancel();
+    _crossfadeTimer = Timer.periodic(const Duration(milliseconds: 80), (_) {
+      final duration = _effectiveTrackDuration();
+      final pos = _player.position;
+      if (duration == null || !_crossfadeEnabled) {
+        _cancelCrossfade();
+        return;
+      }
+      final remaining = duration - pos;
+      if (remaining <= Duration.zero) {
+        _crossfadeTimer?.cancel();
+        _crossfadeTimer = null;
+        return;
+      }
+      final vol = (remaining.inMilliseconds /
+              Duration(seconds: _crossfadeDurationSeconds).inMilliseconds)
+          .clamp(0.0, 1.0);
+      _crossfadeVolume = vol;
+      _player.setVolume(vol);
+    });
+  }
+
+  void _startFadeIn() {
+    _crossfadeTimer?.cancel();
+    _crossfadeTimer = null;
+    _crossfadeVolume = 0.0;
+    _fadeInActive = true;
+    _player.setVolume(0.0);
+    _crossfadeTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      if (!_fadeInActive || !_crossfadeEnabled) {
+        _cancelCrossfade();
+        return;
+      }
+      final vol = (_crossfadeVolume + 0.04).clamp(0.0, 1.0);
+      _crossfadeVolume = vol;
+      _player.setVolume(vol);
+      if (vol >= 1.0) {
+        _fadeInActive = false;
+        _crossfadeTimer?.cancel();
+        _crossfadeTimer = null;
+      }
+    });
+  }
+
+  void _cancelCrossfade() {
+    _crossfadeTimer?.cancel();
+    _crossfadeTimer = null;
+    _crossfadeVolume = 1.0;
+    _fadeInActive = false;
+    _player.setVolume(1.0);
+  }
+
+  Future<LyricsData?> _fetchLyricsWithFallback(Track track) async {
+    final durationSeconds =
+        track.durationMs != null ? track.durationMs! ~/ 1000 : null;
+    final serverFuture = _api
+        .fetchLyrics(track)
+        .timeout(const Duration(seconds: 10))
+        .catchError((_) => null as LyricsData?);
+    final lrclibFuture = _lrclibService.fetchLyrics(
+      artist: track.artist,
+      title: track.title,
+      durationSeconds: durationSeconds,
+    );
+    final results = await Future.wait([serverFuture, lrclibFuture]);
+    final server = results[0];
+    final lrclib = results[1];
+    if (server?.syncedLyrics?.isNotEmpty == true) return server;
+    if (lrclib?.syncedLyrics?.isNotEmpty == true) return lrclib;
+    return server ?? lrclib;
+  }
+
+  @override
+  Future<List<MediaItem>> getChildren(
+    String parentMediaId, [
+    Map<String, dynamic>? options,
+  ]) async {
+    if (parentMediaId == AudioService.browsableRootId) {
+      return [
+        const MediaItem(
+          id: 'queue',
+          title: "File d'attente",
+          playable: false,
+        ),
+      ];
+    }
+    if (parentMediaId == 'queue') {
+      return _buildQueueMediaItems();
+    }
+    return [];
+  }
+
+  @override
   Future<void> onTaskRemoved() async {
     // Ne rien détruire — la lecture doit continuer en arrière-plan.
-    // Le player et les streams restent actifs pour permettre la lecture
-    // depuis la notification quand l'app n'est plus au premier plan.
+  }
+
+  // ─── Convex playback sync ────────────────────────────────────────────────
+
+  void _syncPlaybackState({bool forcePosition = false}) {
+    final convex = _convexService;
+    final userId = _convexUserId;
+    final track = currentTrack;
+    if (convex == null || userId == null || track == null) return;
+
+    final now = DateTime.now();
+    final isPlaying = playbackState.value.playing;
+    final positionMs = playbackState.value.position.inMilliseconds;
+
+    // Throttle : sync position au max toutes les 5s sauf changement de track/état
+    if (!forcePosition && _lastConvexPositionSync != null) {
+      if (now.difference(_lastConvexPositionSync!).inSeconds < 5) return;
+    }
+    _lastConvexPositionSync = now;
+
+    // Fire-and-forget — ne jamais bloquer la lecture
+    unawaited(
+      convex
+          .syncPlaybackState(
+            convexUserId: userId,
+            track: track,
+            isPlaying: isPlaying,
+            positionMs: positionMs,
+          )
+          .catchError((_) {}),
+    );
+  }
+
+  void _recordPlaybackEvent(String eventType) {
+    final convex = _convexService;
+    final userId = _convexUserId;
+    final track = currentTrack;
+    if (convex == null || userId == null || track == null) return;
+
+    final positionMs = playbackState.value.position.inMilliseconds;
+    final durationMs = track.durationMs ?? 0;
+    final listenedMs = _trackStartTime != null
+        ? DateTime.now().difference(_trackStartTime!).inMilliseconds
+        : positionMs;
+    final completionRatio =
+        durationMs > 0 ? (positionMs / durationMs).clamp(0.0, 1.0) : 0.0;
+
+    unawaited(
+      convex
+          .recordPlaybackEvent(
+            convexUserId: userId,
+            track: track,
+            eventType: eventType,
+            listenedMs: listenedMs,
+            completionRatio: completionRatio,
+          )
+          .catchError((_) {}),
+    );
   }
 }
 
-class _ResolvedTrackCacheEntry {
-  const _ResolvedTrackCacheEntry({
-    required this.stream,
-    required this.expiresAt,
-  });
-
-  final ResolvedStream stream;
-  final DateTime expiresAt;
-}
-// Audio
-// Fix audio

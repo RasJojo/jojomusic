@@ -1,8 +1,8 @@
-import 'dart:ui';
-
 import 'package:audio_service/audio_service.dart';
+import 'package:convex_flutter/convex_flutter.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -15,12 +15,13 @@ import 'src/ui/theme/jojo_theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-  };
-  PlatformDispatcher.instance.onError = (error, stack) {
-    return false;
-  };
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarBrightness: Brightness.dark,
+    statusBarIconBrightness: Brightness.light,
+    systemNavigationBarColor: Colors.black,
+    systemNavigationBarIconBrightness: Brightness.light,
+  ));
   runApp(const _BootstrapApp());
 }
 
@@ -41,6 +42,11 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       final sharedPreferences = await SharedPreferences.getInstance();
       final environment = AppEnvironment.fromPlatform();
       final database = AppDatabase();
+
+      // Initialisation du client Convex (singleton)
+      await ConvexClient.initialize(
+        ConvexConfig(deploymentUrl: environment.convexUrl, clientId: 'jojomusique-flutter'),
+      );
       final audioHandler = kIsWeb
           ? JojoAudioHandler(environment: environment, database: database)
           : await AudioService.init(
@@ -53,6 +59,21 @@ class _BootstrapAppState extends State<_BootstrapApp> {
                 androidResumeOnClick: true,
               ),
             );
+
+      // Sync persisted settings into the handler at startup
+      audioHandler.setSponsorBlockEnabled(
+        sharedPreferences.getBool('settings.sponsorblock') ?? false,
+      );
+      audioHandler.setCrossfadeEnabled(
+        sharedPreferences.getBool('settings.crossfade') ?? false,
+      );
+      audioHandler.setCrossfadeDuration(
+        sharedPreferences.getInt('settings.crossfade_duration') ?? 5,
+      );
+      await audioHandler.setSpeed(
+        sharedPreferences.getDouble('settings.playback_speed') ?? 1.0,
+      );
+
       return _BootstrapData(
         sharedPreferences: sharedPreferences,
         environment: environment,

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'src/data/convex_service.dart';
 import 'src/state/home_controller.dart';
 import 'src/state/library_controller.dart';
 import 'src/state/player_controller.dart';
@@ -50,7 +51,17 @@ class _JojoMusiqueAppState extends ConsumerState<JojoMusiqueApp>
       final nextSession = next.asData?.value;
       final previousToken = previousSession?.accessToken;
       final nextToken = nextSession?.accessToken;
-      ref.read(audioHandlerProvider).updateApiToken(nextToken);
+      final handler = ref.read(audioHandlerProvider);
+      handler.updateApiToken(nextToken);
+
+      // Branche / débranche le service Convex selon l'état de session
+      final convexId = nextSession?.convexUserId;
+      if (convexId != null) {
+        handler.setConvexService(ConvexService.instance, convexId);
+      } else if (nextSession == null) {
+        handler.clearConvexService();
+      }
+
       if (nextToken != null && nextToken != previousToken) {
         ref.invalidate(homeControllerProvider);
         ref.invalidate(libraryControllerProvider);

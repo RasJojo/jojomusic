@@ -6,6 +6,7 @@ import '../audio/jojo_audio_handler.dart';
 import '../config/app_environment.dart';
 import '../data/api_service.dart';
 import '../data/app_database.dart';
+import '../data/convex_service.dart';
 import '../data/ytmusic/ytmusic_client.dart';
 import 'session_controller.dart';
 
@@ -44,6 +45,10 @@ final connectivityStatusProvider = StreamProvider<bool>((ref) async* {
 final apiProvider = Provider<ApiService>((ref) {
   final session = ref.watch(sessionControllerProvider).asData?.value;
   return ref.watch(baseApiProvider).withToken(session?.accessToken);
+});
+
+final convexServiceProvider = Provider<ConvexService>((ref) {
+  return ConvexService.instance;
 });
 
 final ytMusicClientProvider = Provider<YtMusicClient>((ref) {

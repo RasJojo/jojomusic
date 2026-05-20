@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/convex_service.dart';
 import '../models/app_models.dart';
 import 'downloads_controller.dart';
 import 'home_controller.dart';
@@ -43,22 +43,18 @@ class LibraryState {
   );
 
   Playlist? get favoritesPlaylist {
-    if (likes.isEmpty) {
-      return null;
-    }
+    if (likes.isEmpty) return null;
     return Playlist(
       id: favoritesPlaylistId,
       name: 'Favoris',
       description: 'Tous les titres que tu as likés.',
       artworkUrl: likes.first.displayArtworkUrl,
       tracks: likes.asMap().entries
-          .map(
-            (entry) => PlaylistTrackItem(
-              id: 'favorite:${entry.value.trackKey}',
-              position: entry.key,
-              track: entry.value,
-            ),
-          )
+          .map((entry) => PlaylistTrackItem(
+                id: 'favorite:${entry.value.trackKey}',
+                position: entry.key,
+                track: entry.value,
+              ))
           .toList(growable: false),
     );
   }
@@ -66,7 +62,6 @@ class LibraryState {
 
 const _libraryCacheKeyPrefix = 'jojomusic.library.cache';
 const _savedAlbumsKey = 'jojomusic.saved_albums';
-const _libraryFetchTimeout = Duration(seconds: 8);
 
 final libraryControllerProvider =
     AsyncNotifierProvider<LibraryController, LibraryState>(
@@ -80,6 +75,11 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     return '$_libraryCacheKeyPrefix.$userId';
   }
 
+  String? get _convexUserId =>
+      ref.read(sessionControllerProvider).asData?.value?.convexUserId;
+
+  ConvexService get _convex => ref.read(convexServiceProvider);
+
   @override
   Future<LibraryState> build() async {
     final cached = await _restoreCachedLibrary();
@@ -87,41 +87,21 @@ class LibraryController extends AsyncNotifier<LibraryState> {
       unawaited(_refreshInBackground());
       return cached;
     }
-    try {
-      final next = await _fetchLibrary().timeout(_libraryFetchTimeout);
-      await _persistLibrary(next);
-      _scheduleOfflineSync(next.playlists, next.likes);
-      return next;
-    } on DioException catch (error) {
-      if (_canUseOfflineCache(error) && cached != null) {
-        return cached;
-      }
-      rethrow;
-    } on TimeoutException {
-      if (cached != null) {
-        return cached;
-      }
-      rethrow;
-    }
+    final next = await _fetchLibrary();
+    await _persistLibrary(next);
+    _scheduleOfflineSync(next.playlists, next.likes);
+    return next;
   }
 
   Future<void> refresh() async {
     final fallback = state.asData?.value ?? await _restoreCachedLibrary();
-    if (fallback == null) {
-      state = const AsyncLoading();
-    }
+    if (fallback == null) state = const AsyncLoading();
     try {
-      final next = await _fetchLibrary().timeout(_libraryFetchTimeout);
+      final next = await _fetchLibrary();
       await _persistLibrary(next);
       _scheduleOfflineSync(next.playlists, next.likes);
       state = AsyncData(next);
-    } on DioException catch (error, stackTrace) {
-      if (_canUseOfflineCache(error) && fallback != null) {
-        state = AsyncData(fallback);
-        return;
-      }
-      state = AsyncError(error, stackTrace);
-    } on TimeoutException catch (error, stackTrace) {
+    } catch (error, stackTrace) {
       if (fallback != null) {
         state = AsyncData(fallback);
         return;
@@ -132,16 +112,25 @@ class LibraryController extends AsyncNotifier<LibraryState> {
 
   Future<void> toggleLike(Track track) async {
     final current = state.asData?.value;
-    if (current == null) {
-      return refresh();
-    }
+    if (current == null) return refresh();
 
-    final api = ref.read(apiProvider);
+    final convexId = _convexUserId;
     final liked = current.likes.any((item) => item.trackKey == track.trackKey);
-    if (liked) {
-      await api.unlikeTrack(track.trackKey);
+
+    if (convexId != null) {
+      if (liked) {
+        await _convex.unsaveTrack(convexUserId: convexId, trackKey: track.trackKey);
+      } else {
+        await _convex.saveTrack(convexUserId: convexId, track: track);
+      }
     } else {
-      await api.likeTrack(track);
+      // Fallback NestJS si pas encore de Convex user
+      final api = ref.read(apiProvider);
+      if (liked) {
+        await api.unlikeTrack(track.trackKey);
+      } else {
+        await api.likeTrack(track);
+      }
     }
     await refresh();
     ref.invalidate(homeControllerProvider);
@@ -151,9 +140,19 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     required String name,
     String description = '',
   }) async {
-    final playlist = await ref
-        .read(apiProvider)
-        .createPlaylist(name: name, description: description);
+    final convexId = _convexUserId;
+    late Playlist playlist;
+    if (convexId != null) {
+      playlist = await _convex.createPlaylistAndReturn(
+        convexUserId: convexId,
+        name: name,
+        description: description,
+      );
+    } else {
+      playlist = await ref
+          .read(apiProvider)
+          .createPlaylist(name: name, description: description);
+    }
     await refresh();
     return playlist;
   }
@@ -163,13 +162,8 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     required Track track,
     String description = '',
   }) async {
-    final playlist = await ref
-        .read(apiProvider)
-        .createPlaylist(name: name, description: description);
-    await ref
-        .read(apiProvider)
-        .addTrackToPlaylist(playlistId: playlist.id, track: track);
-    await refresh();
+    final playlist = await createPlaylist(name: name, description: description);
+    await addToPlaylist(playlistId: playlist.id, track: track);
     return playlist;
   }
 
@@ -178,24 +172,49 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     required String name,
     String? description,
   }) async {
-    final playlist = await ref
-        .read(apiProvider)
-        .updatePlaylist(
-          playlistId: playlistId,
-          name: name,
-          description: description,
-        );
+    final convexId = _convexUserId;
+    if (convexId != null) {
+      await _convex.updatePlaylist(
+        convexUserId: convexId,
+        playlistId: playlistId,
+        name: name,
+        description: description,
+      );
+    } else {
+      await ref.read(apiProvider).updatePlaylist(
+            playlistId: playlistId,
+            name: name,
+            description: description,
+          );
+    }
     await refresh();
-    return playlist;
+    final updated = state.asData?.value.playlists
+        .firstWhere((p) => p.id == playlistId, orElse: () => Playlist(
+              id: playlistId,
+              name: name,
+              description: description ?? '',
+              tracks: [],
+            ));
+    return updated!;
   }
 
   Future<void> addToPlaylist({
     required String playlistId,
     required Track track,
   }) async {
-    await ref
-        .read(apiProvider)
-        .addTrackToPlaylist(playlistId: playlistId, track: track);
+    final convexId = _convexUserId;
+    if (convexId != null) {
+      await _convex.addTrackToPlaylist(
+        convexUserId: convexId,
+        playlistId: playlistId,
+        track: track,
+      );
+    } else {
+      await ref.read(apiProvider).addTrackToPlaylist(
+            playlistId: playlistId,
+            track: track,
+          );
+    }
     await refresh();
   }
 
@@ -217,24 +236,55 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     required String playlistId,
     required String trackKey,
   }) async {
-    await ref
-        .read(apiProvider)
-        .removeTrackFromPlaylist(playlistId: playlistId, trackKey: trackKey);
+    final convexId = _convexUserId;
+    if (convexId != null) {
+      await _convex.removeTrackFromPlaylist(
+        convexUserId: convexId,
+        playlistId: playlistId,
+        trackKey: trackKey,
+      );
+    } else {
+      await ref.read(apiProvider).removeTrackFromPlaylist(
+            playlistId: playlistId,
+            trackKey: trackKey,
+          );
+    }
     await refresh();
   }
 
   Future<void> deletePlaylist(String playlistId) async {
-    await ref.read(apiProvider).deletePlaylist(playlistId);
+    final convexId = _convexUserId;
+    if (convexId != null) {
+      await _convex.deletePlaylist(
+        convexUserId: convexId,
+        playlistId: playlistId,
+      );
+    } else {
+      await ref.read(apiProvider).deletePlaylist(playlistId);
+    }
     await refresh();
   }
 
   Future<void> followPodcast(Podcast podcast) async {
-    await ref.read(apiProvider).followPodcast(podcast);
+    final convexId = _convexUserId;
+    if (convexId != null) {
+      await _convex.savePodcastShow(convexUserId: convexId, podcast: podcast);
+    } else {
+      await ref.read(apiProvider).followPodcast(podcast);
+    }
     await refresh();
   }
 
   Future<void> unfollowPodcast(String podcastKey) async {
-    await ref.read(apiProvider).unfollowPodcast(podcastKey);
+    final convexId = _convexUserId;
+    if (convexId != null) {
+      await _convex.unsavePodcastShow(
+        convexUserId: convexId,
+        podcastKey: podcastKey,
+      );
+    } else {
+      await ref.read(apiProvider).unfollowPodcast(podcastKey);
+    }
     await refresh();
   }
 
@@ -246,14 +296,33 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     await followPodcast(podcast);
   }
 
+  // ── Fetch ──────────────────────────────────────────────────────────────────
+
   Future<LibraryState> _fetchLibrary() async {
+    final convexId = _convexUserId;
+    final savedAlbums = await _loadSavedAlbums();
+
+    if (convexId != null) {
+      final results = await Future.wait([
+        _convex.listSavedTracks(convexId),
+        _convex.listPlaylists(convexId),
+        _convex.listSavedPodcastShows(convexId),
+      ]);
+      return LibraryState(
+        likes: results[0] as List<Track>,
+        playlists: results[1] as List<Playlist>,
+        followedPodcasts: results[2] as List<Podcast>,
+        savedAlbums: savedAlbums,
+      );
+    }
+
+    // Fallback NestJS si pas de Convex user
     final api = ref.read(apiProvider);
     final results = await Future.wait([
       api.fetchLikes(),
       api.fetchPlaylists(),
       api.fetchFollowedPodcasts(),
     ]);
-    final savedAlbums = await _loadSavedAlbums();
     return LibraryState(
       likes: results[0] as List<Track>,
       playlists: results[1] as List<Playlist>,
@@ -261,6 +330,8 @@ class LibraryController extends AsyncNotifier<LibraryState> {
       savedAlbums: savedAlbums,
     );
   }
+
+  // ── Saved albums (local only) ─────────────────────────────────────────────
 
   Future<List<Album>> _loadSavedAlbums() async {
     final encoded =
@@ -278,9 +349,9 @@ class LibraryController extends AsyncNotifier<LibraryState> {
 
   Future<void> _persistSavedAlbums(List<Album> albums) async {
     await ref.read(sharedPreferencesProvider).setString(
-      _savedAlbumsKey,
-      jsonEncode(albums.map((a) => a.toJson()).toList()),
-    );
+          _savedAlbumsKey,
+          jsonEncode(albums.map((a) => a.toJson()).toList()),
+        );
   }
 
   Future<void> toggleSaveAlbum(Album album) async {
@@ -294,68 +365,57 @@ class LibraryController extends AsyncNotifier<LibraryState> {
       saved.insert(0, album);
     }
     await _persistSavedAlbums(saved);
-    state = AsyncData(
-      LibraryState(
-        likes: current.likes,
-        playlists: current.playlists,
-        followedPodcasts: current.followedPodcasts,
-        savedAlbums: saved,
-      ),
-    );
+    state = AsyncData(LibraryState(
+      likes: current.likes,
+      playlists: current.playlists,
+      followedPodcasts: current.followedPodcasts,
+      savedAlbums: saved,
+    ));
   }
 
+  // ── Cache SharedPreferences ───────────────────────────────────────────────
+
   Future<void> _persistLibrary(LibraryState library) async {
-    await ref
-        .read(sharedPreferencesProvider)
-        .setString(
+    await ref.read(sharedPreferencesProvider).setString(
           _libraryCacheKey,
           jsonEncode({
-            'likes': library.likes.map((track) => track.toJson()).toList(),
+            'likes': library.likes.map((t) => t.toJson()).toList(),
             'playlists': library.playlists
-                .map(
-                  (playlist) => {
-                    'id': playlist.id,
-                    'name': playlist.name,
-                    'description': playlist.description,
-                    'artwork_url': playlist.artworkUrl,
-                    'tracks': playlist.tracks
-                        .map(
-                          (item) => {
-                            'id': item.id,
-                            'position': item.position,
-                            'track_payload': item.track.toJson(),
-                          },
-                        )
-                        .toList(),
-                  },
-                )
+                .map((p) => {
+                      'id': p.id,
+                      'name': p.name,
+                      'description': p.description,
+                      'artwork_url': p.artworkUrl,
+                      'tracks': p.tracks
+                          .map((item) => {
+                                'id': item.id,
+                                'position': item.position,
+                                'track_payload': item.track.toJson(),
+                              })
+                          .toList(),
+                    })
                 .toList(),
             'followed_podcasts': library.followedPodcasts
-                .map(
-                  (podcast) => {
-                    'podcast_key': podcast.podcastKey,
-                    'title': podcast.title,
-                    'publisher': podcast.publisher,
-                    'description': podcast.description,
-                    'artwork_url': podcast.artworkUrl,
-                    'feed_url': podcast.feedUrl,
-                    'external_url': podcast.externalUrl,
-                    'episode_count': podcast.episodeCount,
-                    'release_date': podcast.releaseDate?.toIso8601String(),
-                  },
-                )
+                .map((pod) => {
+                      'podcast_key': pod.podcastKey,
+                      'title': pod.title,
+                      'publisher': pod.publisher,
+                      'description': pod.description,
+                      'artwork_url': pod.artworkUrl,
+                      'feed_url': pod.feedUrl,
+                      'external_url': pod.externalUrl,
+                      'episode_count': pod.episodeCount,
+                      'release_date': pod.releaseDate?.toIso8601String(),
+                    })
                 .toList(),
           }),
         );
   }
 
   Future<LibraryState?> _restoreCachedLibrary() async {
-    final encoded = ref
-        .read(sharedPreferencesProvider)
-        .getString(_libraryCacheKey);
-    if (encoded == null || encoded.isEmpty) {
-      return null;
-    }
+    final encoded =
+        ref.read(sharedPreferencesProvider).getString(_libraryCacheKey);
+    if (encoded == null || encoded.isEmpty) return null;
     try {
       final json = jsonDecode(encoded) as Map<String, dynamic>;
       final likes = (json['likes'] as List<dynamic>? ?? [])
@@ -379,23 +439,14 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     }
   }
 
-  bool _canUseOfflineCache(DioException error) {
-    final statusCode = error.response?.statusCode;
-    return statusCode == null;
-  }
-
   Future<void> _refreshInBackground() async {
     try {
-      final next = await _fetchLibrary().timeout(_libraryFetchTimeout);
+      final next = await _fetchLibrary();
       await _persistLibrary(next);
       _scheduleOfflineSync(next.playlists, next.likes);
-      if (!ref.mounted) {
-        return;
-      }
+      if (!ref.mounted) return;
       state = AsyncData(next);
-    } on DioException catch (_) {
-      return;
-    } on TimeoutException {
+    } catch (_) {
       return;
     }
   }
