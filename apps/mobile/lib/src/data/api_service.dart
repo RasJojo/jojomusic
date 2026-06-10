@@ -15,7 +15,11 @@ class ApiService {
               ? <String, dynamic>{}
               : {'Authorization': 'Bearer $accessToken'},
         ),
-      );
+      ) {
+    // Clear stale in-flight futures from previous sessions so they don't
+    // pollute a new session's cache after token rotation.
+    _searchInFlight.clear();
+  }
 
   final AppEnvironment _environment;
   final String? accessToken;
@@ -26,6 +30,10 @@ class ApiService {
 
   ApiService withToken(String? token) =>
       ApiService(environment: _environment, accessToken: token);
+
+  void dispose() {
+    _convexDio.close(force: true);
+  }
 
   Future<bool> pingHealth() async {
     try {
@@ -292,13 +300,15 @@ class ApiService {
     String? description,
     String? artworkUrl,
   }) async {
+    // Only include non-null fields so the server doesn't interpret a missing
+    // optional value as "set this field to null" (data loss).
+    final data = <String, dynamic>{};
+    if (name != null) data['name'] = name;
+    if (description != null) data['description'] = description;
+    if (artworkUrl != null) data['artwork_url'] = artworkUrl;
     final response = await _convexDio.patch<Map<String, dynamic>>(
       '/playlists/$playlistId',
-      data: {
-        'name': name,
-        'description': description,
-        'artwork_url': artworkUrl,
-      },
+      data: data,
     );
     return Playlist.fromJson(response.data!);
   }

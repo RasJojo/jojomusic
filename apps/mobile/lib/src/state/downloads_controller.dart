@@ -43,6 +43,7 @@ class DownloadsController {
   // BUG #5 fix: lifecycle flag — set to true in dispose() so in-flight
   // callbacks can bail out before touching the database.
   bool _disposed = false;
+  bool _syncInProgress = false;
   static const _downloadRetryCount = 3;
   static const _betweenTrackDelay = Duration(milliseconds: 850);
 
@@ -111,6 +112,16 @@ class DownloadsController {
   }
 
   Future<void> _syncOfflineTracks(Map<String, Track> desiredTracks) async {
+    if (_syncInProgress) return;
+    _syncInProgress = true;
+    try {
+      await _syncOfflineTracksInternal(desiredTracks);
+    } finally {
+      _syncInProgress = false;
+    }
+  }
+
+  Future<void> _syncOfflineTracksInternal(Map<String, Track> desiredTracks) async {
     final database = ref.read(appDatabaseProvider);
     final existingTracks = await database.getOfflineTracks();
     final documents = await getApplicationDocumentsDirectory();
@@ -227,10 +238,11 @@ class DownloadsController {
   }) async {
     // BUG #5 fix: bail out immediately if the controller has been disposed.
     if (_disposed) return;
-    // BUG #5 fix: delete any partial file from a previous attempt BEFORE
-    // starting the download so we never append to or corrupt a stale file.
+    // Delete any partial file from a previous attempt BEFORE starting the
+    // download so we never append to or corrupt a stale file. Use async delete
+    // to avoid blocking the main isolate on I/O.
     try {
-      File(outputPath).deleteSync(recursive: false);
+      await File(outputPath).delete();
     } catch (_) {
       // Ignore ENOENT (file does not exist) and any other platform errors.
     }

@@ -33,13 +33,13 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     _ytClient = YtMusicClient();
     _lrclibService = LrclibService();
     _sponsorBlockService = SponsorBlockService();
-    _player.playerStateStream.listen(_broadcastState);
-    _player.durationStream.listen((duration) {
+    _subPlayerState = _player.playerStateStream.listen(_broadcastState);
+    _subDuration = _player.durationStream.listen((duration) {
       if (duration != null) {
         _syncCurrentTrackMetadata(durationMs: duration.inMilliseconds);
       }
     });
-    _player.positionStream.listen((position) {
+    _subPosition = _player.positionStream.listen((position) {
       playbackState.add(
         playbackState.value.copyWith(
           updatePosition: position,
@@ -50,7 +50,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       if (_sponsorBlockEnabled) _checkSponsorSegment(position);
       if (_crossfadeEnabled) _maybeTriggerCrossfade(position);
     });
-    _player.processingStateStream.distinct().listen((state) {
+    _subProcessingState = _player.processingStateStream.distinct().listen((state) {
       if (state == ja.ProcessingState.completed) {
         unawaited(_handleQueueCompletion());
       }
@@ -58,11 +58,11 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     // BUG #3 fix: removed _syncNativeCurrentIndex from playbackEventStream to
     // avoid 4-5 redundant calls per index change. The single authoritative
     // listener is currentIndexStream.distinct() below.
-    _player.playbackEventStream.listen((event) {
+    _subPlaybackEvent = _player.playbackEventStream.listen((event) {
       _syncActiveAudioSource(forcePublish: true);
     });
-    _player.currentIndexStream.distinct().listen(_handleNativeCurrentIndex);
-    _player.sequenceStateStream.listen((sequence) {
+    _subCurrentIndex = _player.currentIndexStream.distinct().listen(_handleNativeCurrentIndex);
+    _subSequenceState = _player.sequenceStateStream.listen((sequence) {
       _syncNativeSequenceState(sequence, forcePublish: true);
     });
     // BUG #3 fix: removed _syncNativeCurrentIndex from periodic timer — the
@@ -136,6 +136,15 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   double _crossfadeVolume = 1.0;
   bool _fadeInActive = false;
 
+  // BUG #1 fix: store subscriptions so they can be cancelled in stop().
+  late StreamSubscription<ja.PlayerState> _subPlayerState;
+  late StreamSubscription<Duration?> _subDuration;
+  late StreamSubscription<Duration> _subPosition;
+  late StreamSubscription<ja.ProcessingState> _subProcessingState;
+  late StreamSubscription<ja.PlaybackEvent> _subPlaybackEvent;
+  late StreamSubscription<int?> _subCurrentIndex;
+  late StreamSubscription<ja.SequenceState?> _subSequenceState;
+
   final Map<String, Future<ResolvedStream>> _resolveInFlight = {};
   final Map<String, _CachedResolvedStream> _resolvedStreamCache = {};
 
@@ -164,9 +173,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     bool forceRefresh = false,
   }) async {
     if (!forceRefresh) {
-      final cached = _lyricsCache[track.trackKey];
-      if (cached != null) {
-        return cached;
+      // containsKey catches the null result case (track has no lyrics) so we
+      // don't re-fetch on every call for known-empty tracks.
+      if (_lyricsCache.containsKey(track.trackKey)) {
+        return _lyricsCache[track.trackKey];
       }
     }
     final pending = _lyricsInFlight[track.trackKey];
@@ -178,11 +188,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     _lyricsInFlight[track.trackKey] = future;
     try {
       final lyrics = await future;
-      if (lyrics != null) {
-        _lyricsCache[track.trackKey] = lyrics;
-      } else {
-        _lyricsCache.remove(track.trackKey);
-      }
+      // Store even null results so repeated calls don't re-hit the API.
+      _lyricsCache[track.trackKey] = lyrics;
       return lyrics;
     } finally {
       _lyricsInFlight.remove(track.trackKey);
@@ -289,17 +296,22 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   @override
   Future<void> stop() async {
     _pauseRequestedManually = true;
-    // BUG #1 fix: cancel the crossfade timer to prevent it from firing after
-    // the handler is shut down (leak).
+    // Cancel all player stream subscriptions so the handler can be GC'd.
+    await _subPlayerState.cancel();
+    await _subDuration.cancel();
+    await _subPosition.cancel();
+    await _subProcessingState.cancel();
+    await _subPlaybackEvent.cancel();
+    await _subCurrentIndex.cancel();
+    await _subSequenceState.cancel();
+    // Cancel timers.
     _crossfadeTimer?.cancel();
     _crossfadeTimer = null;
-    // BUG #2 fix: cancel the watchdog timer when stopping so it doesn't fire
-    // after the handler is effectively shut down.
     _watchdogTimer?.cancel();
     _watchdogTimer = null;
-    // BUG #14 fix: dispose the local stream resolver so YoutubeExplode's
-    // internal HttpClient is closed and not leaked.
-    _localResolver.dispose();
+    // Note: _localResolver.dispose() intentionally omitted — disposing
+    // YoutubeExplode's HTTP client breaks the fallback resolver if stop() is
+    // called and then playback resumes in the same session.
     await _player.stop();
     await super.stop();
   }
@@ -377,11 +389,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     _currentIndex = index;
     _completionGuardTrackKey = null;
     _completionGuardAt = null;
-    _lastProgressTrackKey = _queueTracks[index].trackKey;
-    _lastProgressPositionMs = 0;
-    _lastProgressAt = DateTime.now();
     _pauseRequestedManually = false;
-    _trackStartTime = DateTime.now();
     final track = _queueTracks[index];
     // Sync état de lecture vers Convex (nouveau morceau)
     _syncPlaybackState(forcePosition: true);
@@ -403,6 +411,13 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         throw TrackLoadException(track: track, cause: error);
       }
       if (loadGeneration != _loadGeneration) return;
+      // BUG #8 fix: reset progress tracking AFTER stream resolution succeeds,
+      // not before, to avoid the watchdog falsely firing for the new track key
+      // at position 0 during slow network resolution (≥4 s triggers dead-track).
+      _lastProgressTrackKey = _queueTracks[index].trackKey;
+      _lastProgressPositionMs = 0;
+      _lastProgressAt = DateTime.now();
+      _trackStartTime = DateTime.now();
 
       try {
         await _player
@@ -1323,6 +1338,21 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       _currentIndex++;
     }
     queue.add(_buildQueueMediaItems());
+    // Invalidate the native upcoming source buffer so it's rebuilt in the new
+    // order. Without this, just_audio's internal sequence retains the old order
+    // and gapless advance plays the wrong track.
+    if (_nativeQueuePreparedUntil > _currentIndex) {
+      final currentNativeIndex = _currentIndex - _nativeQueueBaseIndex;
+      final preparedCount = _nativeQueuePreparedUntil - _currentIndex;
+      unawaited(_mutatePlayer(() async {
+        for (var i = preparedCount; i >= 1; i--) {
+          try {
+            await _player.removeAudioSourceAt(currentNativeIndex + i);
+          } catch (_) {}
+        }
+        _nativeQueuePreparedUntil = _currentIndex;
+      }));
+    }
   }
 
   void setSponsorBlockEnabled(bool enabled) {
@@ -1376,7 +1406,15 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
 
   void _startFadeOut() {
     _crossfadeTimer?.cancel();
-    _crossfadeTimer = Timer.periodic(const Duration(milliseconds: 80), (_) {
+    // Capture the timer reference locally so the callback can guard against
+    // being orphaned if _startFadeOut is called again before this timer fires
+    // its final tick (BUG #15 fix).
+    Timer? myTimer;
+    myTimer = Timer.periodic(const Duration(milliseconds: 80), (_) {
+      if (_crossfadeTimer != myTimer) {
+        myTimer?.cancel();
+        return;
+      }
       final duration = _effectiveTrackDuration();
       final pos = _player.position;
       if (duration == null || !_crossfadeEnabled) {
@@ -1385,7 +1423,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       }
       final remaining = duration - pos;
       if (remaining <= Duration.zero) {
-        _crossfadeTimer?.cancel();
+        myTimer?.cancel();
         _crossfadeTimer = null;
         return;
       }
@@ -1396,6 +1434,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       _crossfadeVolume = vol;
       _player.setVolume(vol);
     });
+    _crossfadeTimer = myTimer;
   }
 
   void _startFadeIn() {

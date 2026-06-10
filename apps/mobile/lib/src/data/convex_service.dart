@@ -242,9 +242,6 @@ class ConvexService {
           name: 'playbackState:get',
           args: {'userId': convexUserId},
           onUpdate: (json) {
-            // BUG #11 fix: guard against adding to a closed controller, which
-            // throws "Bad state: Cannot add event after closing" when setup
-            // races with dispose.
             if (controller.isClosed) return;
             final data = _decode(json);
             if (data == null) {
@@ -256,15 +253,14 @@ class ConvexService {
             }
           },
           onError: (msg, _) {
-            // BUG #11 fix: same guard for error events.
             if (!controller.isClosed) controller.addError(msg);
           },
         );
         setupCompleter.complete(handle);
       } catch (error, stack) {
-        // BUG #11 fix: setup failed — signal the Completer and close the
-        // controller so the caller's StreamSubscription terminates cleanly.
-        setupCompleter.complete(null);
+        // Ensure the Completer is always completed so onCancel doesn't await
+        // forever if setup throws synchronously before reaching the try body.
+        if (!setupCompleter.isCompleted) setupCompleter.complete(null);
         if (!controller.isClosed) {
           controller.addError(error, stack);
           await controller.close();

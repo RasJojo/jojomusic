@@ -28,6 +28,16 @@ class _LyricsScreenState extends ConsumerState<LyricsScreen> {
   }
 
   @override
+  void didUpdateWidget(LyricsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.mediaItem.id != widget.mediaItem.id) {
+      setState(() {
+        _lyricsFuture = _loadLyrics();
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final mediaQuery = MediaQuery.of(context);
     final useDesktopLyrics =
@@ -258,9 +268,15 @@ class _SyncedLyricsViewState extends ConsumerState<_SyncedLyricsView> {
       }
     }
 
+    // Mutating state inside build() violates Flutter's contract. Schedule the
+    // update as a post-frame callback so it runs outside the build phase.
     if (newIndex != _currentIndex) {
-      _currentIndex = newIndex;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToCurrent());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && newIndex != _currentIndex) {
+          setState(() => _currentIndex = newIndex);
+          _scrollToCurrent();
+        }
+      });
     }
 
     if (_lines.isEmpty) {
