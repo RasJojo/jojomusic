@@ -204,16 +204,23 @@ class LibraryController extends AsyncNotifier<LibraryState> {
           );
     }
     await refresh();
-    final updated = state.asData?.value.playlists.firstWhere(
-      (p) => p.id == playlistId,
-      orElse: () => Playlist(
-        id: playlistId,
-        name: name,
-        description: description ?? '',
-        tracks: [],
-      ),
-    );
-    return updated!;
+    // state.asData can be null if refresh() transitions through AsyncLoading;
+    // fall back to a minimal Playlist rather than crashing with ! on null.
+    return state.asData?.value.playlists.firstWhere(
+          (p) => p.id == playlistId,
+          orElse: () => Playlist(
+            id: playlistId,
+            name: name,
+            description: description ?? '',
+            tracks: [],
+          ),
+        ) ??
+        Playlist(
+          id: playlistId,
+          name: name,
+          description: description ?? '',
+          tracks: [],
+        );
   }
 
   Future<void> addToPlaylist({
