@@ -242,6 +242,10 @@ class ConvexService {
           name: 'playbackState:get',
           args: {'userId': convexUserId},
           onUpdate: (json) {
+            // BUG #11 fix: guard against adding to a closed controller, which
+            // throws "Bad state: Cannot add event after closing" when setup
+            // races with dispose.
+            if (controller.isClosed) return;
             final data = _decode(json);
             if (data == null) {
               controller.add(null);
@@ -251,7 +255,10 @@ class ConvexService {
               );
             }
           },
-          onError: (msg, _) => controller.addError(msg),
+          onError: (msg, _) {
+            // BUG #11 fix: same guard for error events.
+            if (!controller.isClosed) controller.addError(msg);
+          },
         );
         setupCompleter.complete(handle);
       } catch (error, stack) {

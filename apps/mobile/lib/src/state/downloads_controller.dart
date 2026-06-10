@@ -119,18 +119,23 @@ class DownloadsController {
       await directory.create(recursive: true);
     }
 
-    final existingByKey = {
-      for (final track in existingTracks) track.trackKey: track,
-    };
-
+    // BUG #3 + #15 fix: the original code had two separate loops both reading
+    // from the same stale `existingByKey` snapshot taken before the first loop
+    // ran. The first loop wrote DB rows (upserts) whose fresh state was never
+    // reflected in the second loop's `existing` lookups.  Merge into one loop:
+    // for each desired track, check the DB, update metadata / mark as downloaded
+    // if the file already exists, or kick off a download otherwise.
     for (final entry in desiredTracks.entries) {
       final track = entry.value;
-      final existing = existingByKey[track.trackKey];
+      // Re-read the current DB row each iteration so we always see the freshest
+      // state (written by a previous iteration or a concurrent download).
+      final existing = await database.findOfflineTrack(track.trackKey);
       final filePath =
           existing?.filePath ?? '${directory.path}/${track.trackKey}.m4a';
       final file = File(filePath);
 
       if (existing != null && await file.exists()) {
+        // File is present — refresh metadata and mark as downloaded.
         await database.upsertOfflineTrack(
           OfflineTracksCompanion.insert(
             trackKey: track.trackKey,
@@ -148,6 +153,7 @@ class DownloadsController {
         continue;
       }
 
+      // File does not exist yet — enqueue and download.
       await database.upsertOfflineTrack(
         OfflineTracksCompanion.insert(
           trackKey: track.trackKey,
@@ -162,33 +168,6 @@ class DownloadsController {
           updatedAt: DateTime.now(),
         ),
       );
-    }
-
-    for (final entry in desiredTracks.entries) {
-      final track = entry.value;
-      final existing = existingByKey[track.trackKey];
-      final filePath =
-          existing?.filePath ?? '${directory.path}/${track.trackKey}.m4a';
-      final file = File(filePath);
-
-      if (existing != null && await file.exists()) {
-        await database.upsertOfflineTrack(
-          OfflineTracksCompanion.insert(
-            trackKey: track.trackKey,
-            title: track.title,
-            artist: track.artist,
-            album: Value(track.album),
-            artworkUrl: Value(track.displayArtworkUrl),
-            filePath: filePath,
-            status: 'downloaded',
-            progress: const Value(1),
-            createdAt: existing.createdAt,
-            updatedAt: DateTime.now(),
-          ),
-        );
-        continue;
-      }
-
       await _downloadTrackWithRetries(track: track, outputPath: filePath);
       await Future<void>.delayed(_betweenTrackDelay);
     }
@@ -248,6 +227,13 @@ class DownloadsController {
   }) async {
     // BUG #5 fix: bail out immediately if the controller has been disposed.
     if (_disposed) return;
+    // BUG #5 fix: delete any partial file from a previous attempt BEFORE
+    // starting the download so we never append to or corrupt a stale file.
+    try {
+      File(outputPath).deleteSync(recursive: false);
+    } catch (_) {
+      // Ignore ENOENT (file does not exist) and any other platform errors.
+    }
     final database = ref.read(appDatabaseProvider);
     final api = ref.read(apiProvider);
     final normalizedPath = _normalizedOfflinePath(outputPath);

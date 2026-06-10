@@ -47,7 +47,15 @@ class LibraryState {
       id: favoritesPlaylistId,
       name: 'Favoris',
       description: 'Tous les titres que tu as likés.',
-      artworkUrl: likes.first.displayArtworkUrl,
+      // BUG #12 fix: likes.first may have a null displayArtworkUrl; find the
+      // first track that actually has one, falling back to likes.first (which
+      // may still be null — that is fine since artworkUrl is nullable).
+      artworkUrl: likes
+          .firstWhere(
+            (t) => t.displayArtworkUrl != null,
+            orElse: () => likes.first,
+          )
+          .displayArtworkUrl,
       tracks: likes
           .asMap()
           .entries

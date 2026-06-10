@@ -123,6 +123,12 @@ class ApiService {
         result: result,
         expiresAt: DateTime.now().add(_searchCacheTtl),
       );
+      // BUG #7 fix: cap the cache at 200 entries to prevent unbounded growth.
+      // Dart maps iterate in insertion order, so removing the first key evicts
+      // the oldest entry.
+      if (_searchCache.length > 200) {
+        _searchCache.remove(_searchCache.keys.first);
+      }
       return result;
     })();
     _searchInFlight[cacheKey] = future;

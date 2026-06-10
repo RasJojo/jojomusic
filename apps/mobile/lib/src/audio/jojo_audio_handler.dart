@@ -289,10 +289,17 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   @override
   Future<void> stop() async {
     _pauseRequestedManually = true;
+    // BUG #1 fix: cancel the crossfade timer to prevent it from firing after
+    // the handler is shut down (leak).
+    _crossfadeTimer?.cancel();
+    _crossfadeTimer = null;
     // BUG #2 fix: cancel the watchdog timer when stopping so it doesn't fire
     // after the handler is effectively shut down.
     _watchdogTimer?.cancel();
     _watchdogTimer = null;
+    // BUG #14 fix: dispose the local stream resolver so YoutubeExplode's
+    // internal HttpClient is closed and not leaked.
+    _localResolver.dispose();
     await _player.stop();
     await super.stop();
   }
@@ -362,6 +369,11 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     _cancelCrossfade();
     final loadGeneration = ++_loadGeneration;
     ++_completionCallToken;
+    // BUG #13 fix: save the old index so we can restore it if setAudioSources
+    // fails. We optimistically set _currentIndex = index here for UI/broadcast
+    // purposes, but restore on a definitive load failure to keep the index
+    // pointing at a valid (previously playing) track rather than a broken one.
+    final previousIndex = _currentIndex;
     _currentIndex = index;
     _completionGuardTrackKey = null;
     _completionGuardAt = null;
@@ -384,6 +396,9 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       } catch (error) {
         if (loadGeneration == _loadGeneration) {
           _broadcastLoadError(error);
+          // BUG #13 fix: restore the previous index on stream-resolution failure
+          // so _currentIndex does not point at a broken track.
+          _currentIndex = previousIndex;
         }
         throw TrackLoadException(track: track, cause: error);
       }
@@ -423,6 +438,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
             _broadcastLoadError(
               retryError is TimeoutException ? retryError : error,
             );
+            // BUG #13 fix: restore the previous index so _currentIndex does not
+            // point at a track that failed to load. Only restore when we are
+            // still the active generation (a newer _loadAt will set its own index).
+            _currentIndex = previousIndex;
           }
           throw TrackLoadException(
             track: track,
@@ -549,6 +568,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   void _syncActiveAudioSource({bool forcePublish = false}) {
+    // BUG #2 fix: when no audio source is loaded the sequence is empty and
+    // currentSource is null — skip the sync to avoid a potential crash inside
+    // _syncNativeSequenceState when it tries to read currentSource?.tag.
+    if (_player.audioSource == null) return;
     final sequence = _player.sequenceState;
     _syncNativeSequenceState(sequence, forcePublish: forcePublish);
   }
@@ -1042,6 +1065,9 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       _playerMutationChain = Future<void>.value();
       unawaited(_loadAt(_currentIndex));
     } else {
+      // BUG #10 fix: skip if _handleQueueCompletion is already running to
+      // prevent the second watchdog tick from racing into it concurrently.
+      if (_isHandlingCompletion) return;
       unawaited(_handleQueueCompletion());
     }
   }
@@ -1454,7 +1480,9 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
 
     final now = DateTime.now();
     final isPlaying = playbackState.value.playing;
-    final positionMs = playbackState.value.position.inMilliseconds;
+    // BUG #6 fix: use _player.position (authoritative current position) instead
+    // of playbackState.value.position which may be an extrapolated/stale value.
+    final positionMs = _player.position.inMilliseconds;
 
     // Throttle : sync position au max toutes les 5s sauf changement de track/état
     if (!forcePosition && _lastConvexPositionSync != null) {

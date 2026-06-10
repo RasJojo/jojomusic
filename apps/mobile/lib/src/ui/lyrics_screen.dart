@@ -185,8 +185,21 @@ List<_LrcLine> _parseLrc(String lrc) {
     if (match == null) continue;
     final minutes = int.parse(match.group(1)!);
     final seconds = int.parse(match.group(2)!);
-    final subRaw = match.group(3)!.padRight(2, '0');
-    final hundredths = int.parse(subRaw.substring(0, 2));
+    final subRaw = match.group(3)!;
+    // BUG #9 fix: handle 1-, 2-, and 3-digit sub-second fields correctly.
+    //   1 digit  → tenths of a second  → multiply by 100 to get ms
+    //   2 digits → centiseconds        → multiply by 10 to get ms
+    //   3 digits → milliseconds        → use as-is
+    // The old code used padRight(2,'0').substring(0,2) which silently
+    // truncated 3-digit values (e.g. "123" → "12" → 120 ms instead of 123 ms).
+    final int milliseconds;
+    if (subRaw.length == 3) {
+      milliseconds = int.parse(subRaw);
+    } else if (subRaw.length == 2) {
+      milliseconds = int.parse(subRaw) * 10;
+    } else {
+      milliseconds = int.parse(subRaw) * 100;
+    }
     final text = match.group(4)!.trim();
     if (text.isEmpty) continue;
     lines.add(
@@ -194,7 +207,7 @@ List<_LrcLine> _parseLrc(String lrc) {
         timestamp: Duration(
           minutes: minutes,
           seconds: seconds,
-          milliseconds: hundredths * 10,
+          milliseconds: milliseconds,
         ),
         text: text,
       ),
