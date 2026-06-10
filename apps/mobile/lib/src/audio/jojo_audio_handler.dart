@@ -510,7 +510,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   void _handleNativeCurrentIndex(int? nativeIndex) {
-    _syncNativeCurrentIndex(nativeIndex);
+    _syncNativeCurrentIndex(nativeIndex, forcePublish: true);
   }
 
   void _syncActiveAudioSource({bool forcePublish = false}) {
