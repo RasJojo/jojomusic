@@ -22,7 +22,11 @@ class ConvexService {
 
   dynamic _decode(String json) => jsonDecode(json);
 
-  List<dynamic> _decodeList(String json) => jsonDecode(json) as List<dynamic>;
+  List<dynamic> _decodeList(String json) {
+    final decoded = jsonDecode(json);
+    if (decoded is List) return decoded;
+    return [];
+  }
 
   // ─── Auth / Users ─────────────────────────────────────────────────────────
 
@@ -225,28 +229,51 @@ class ConvexService {
   /// Stream temps réel de l'état de lecture — tous les devices du même user
   Stream<RemotePlaybackState?> watchPlaybackState(String convexUserId) {
     final controller = StreamController<RemotePlaybackState?>.broadcast();
-    SubscriptionHandle? handle;
+    // BUG #11 fix: use a Completer so that onCancel always waits for setup()
+    // to complete before cancelling the handle, preventing a race where
+    // onCancel fires with handle == null while setup() is still in flight.
+    final setupCompleter = Completer<SubscriptionHandle?>();
 
-    Future<void> setup() async {
-      handle = await _client.subscribe(
-        name: 'playbackState:get',
-        args: {'userId': convexUserId},
-        onUpdate: (json) {
-          final data = _decode(json);
-          if (data == null) {
-            controller.add(null);
-          } else {
-            controller.add(
-              RemotePlaybackState.fromJson(data as Map<String, dynamic>),
-            );
-          }
-        },
-        onError: (msg, _) => controller.addError(msg),
-      );
-    }
+    // Run setup asynchronously; on failure close the controller to avoid a
+    // leaked open stream (which would be a memory leak).
+    () async {
+      try {
+        final handle = await _client.subscribe(
+          name: 'playbackState:get',
+          args: {'userId': convexUserId},
+          onUpdate: (json) {
+            final data = _decode(json);
+            if (data == null) {
+              controller.add(null);
+            } else {
+              controller.add(
+                RemotePlaybackState.fromJson(data as Map<String, dynamic>),
+              );
+            }
+          },
+          onError: (msg, _) => controller.addError(msg),
+        );
+        setupCompleter.complete(handle);
+      } catch (error, stack) {
+        // BUG #11 fix: setup failed — signal the Completer and close the
+        // controller so the caller's StreamSubscription terminates cleanly.
+        setupCompleter.complete(null);
+        if (!controller.isClosed) {
+          controller.addError(error, stack);
+          await controller.close();
+        }
+      }
+    }();
 
-    setup();
-    controller.onCancel = () => handle?.cancel();
+    controller.onCancel = () async {
+      // BUG #13 fix: await setup completion before cancelling so we never
+      // lose the handle reference due to a timing race.
+      final handle = await setupCompleter.future;
+      handle?.cancel();
+      if (!controller.isClosed) {
+        await controller.close();
+      }
+    };
     return controller.stream;
   }
 

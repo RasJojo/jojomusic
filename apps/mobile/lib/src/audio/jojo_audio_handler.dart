@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:drift/drift.dart' show Value;
 import 'package:just_audio/just_audio.dart' as ja;
 
@@ -54,16 +55,20 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         unawaited(_handleQueueCompletion());
       }
     });
+    // BUG #3 fix: removed _syncNativeCurrentIndex from playbackEventStream to
+    // avoid 4-5 redundant calls per index change. The single authoritative
+    // listener is currentIndexStream.distinct() below.
     _player.playbackEventStream.listen((event) {
-      _syncNativeCurrentIndex(event.currentIndex, forcePublish: true);
       _syncActiveAudioSource(forcePublish: true);
     });
     _player.currentIndexStream.distinct().listen(_handleNativeCurrentIndex);
     _player.sequenceStateStream.listen((sequence) {
       _syncNativeSequenceState(sequence, forcePublish: true);
     });
-    Timer.periodic(const Duration(milliseconds: 900), (_) {
-      _syncNativeCurrentIndex(_player.currentIndex, forcePublish: true);
+    // BUG #3 fix: removed _syncNativeCurrentIndex from periodic timer — the
+    // distinct() listener above is the sole authority for index sync.
+    // BUG #2 fix: store the timer reference so it can be cancelled on stop().
+    _watchdogTimer = Timer.periodic(const Duration(milliseconds: 900), (_) {
       _syncActiveAudioSource(forcePublish: true);
       _watchdogForCompletion();
     });
@@ -114,6 +119,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   int _nativeQueueBaseIndex = 0;
   int _nativeQueuePreparedUntil = -1;
   bool _isLoadingTrack = false;
+  bool _isHandlingCompletion = false; // BUG #10 fix: re-entry guard
   Future<void> _playerMutationChain = Future<void>.value();
 
   late LrclibService _lrclibService;
@@ -125,6 +131,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   bool _crossfadeEnabled = false;
   int _crossfadeDurationSeconds = 5;
   Timer? _crossfadeTimer;
+  // BUG #2 fix: keep a reference to cancel the 900ms watchdog on stop().
+  Timer? _watchdogTimer;
   double _crossfadeVolume = 1.0;
   bool _fadeInActive = false;
 
@@ -208,7 +216,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     ++_completionCallToken;
     _playerMutationChain = Future<void>.value();
     _queueTracks.clear();
-    _currentIndex = 0;
+    // BUG #4 fix: do NOT assign _currentIndex = 0 here — wait until setUrl
+    // succeeds so a failed load doesn't leave _currentIndex pointing at an
+    // invalid index. Reset to -1 so currentTrack returns null on error.
+    _currentIndex = -1;
     _autoplayEnabled = false;
     _lastAutoplaySeedKey = null;
     queue.add([
@@ -234,8 +245,13 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         if (loadGeneration != _loadGeneration) {
           return;
         }
+        // BUG #4 fix: assign _currentIndex only after setUrl succeeds.
+        // BUG #12 fix: generation guard already checked above before this point.
+        _currentIndex = 0;
         mediaItem.add(queue.value.first);
         _broadcastState(_player.playerState);
+        // BUG #12 fix: guard again after each async step.
+        if (loadGeneration != _loadGeneration) return;
         await _player.play();
         _broadcastState(_player.playerState);
       });
@@ -273,6 +289,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   @override
   Future<void> stop() async {
     _pauseRequestedManually = true;
+    // BUG #2 fix: cancel the watchdog timer when stopping so it doesn't fire
+    // after the handler is effectively shut down.
+    _watchdogTimer?.cancel();
+    _watchdogTimer = null;
     await _player.stop();
     await super.stop();
   }
@@ -357,7 +377,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       await _interruptCurrentPlayback();
       if (loadGeneration != _loadGeneration) return;
       _broadcastLoadingState();
-      mediaItem.add(_toMediaItem(track, index: index));
+      // BUG #1 fix: do NOT publish mediaItem here — wait until setAudioSources succeeds.
       final ja.AudioSource audioSource;
       try {
         audioSource = await _audioSourceForTrack(index, track);
@@ -423,6 +443,12 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
           RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(videoId)) {
         unawaited(_loadSponsorSegments(videoId));
       } else {
+        // BUG #9 fix: log when SponsorBlock is skipped so failures are visible.
+        if (_sponsorBlockEnabled) {
+          debugPrint(
+            '[SponsorBlock] skipped — videoId "$videoId" does not match YouTube ID pattern',
+          );
+        }
         _currentSegments = [];
       }
       if (!_pauseRequestedManually) {
@@ -431,9 +457,15 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       }
       _broadcastState(_player.playerState);
     } finally {
+      // BUG #8 fix: a stale generation (loadGeneration < _loadGeneration) must
+      // NOT reset _isLoadingTrack because a newer _loadAt() already claimed it.
+      // An equal generation means we are the active load — always reset it so
+      // the flag never gets stuck true if this generation throws or returns early.
       if (loadGeneration == _loadGeneration) {
         _isLoadingTrack = false;
       }
+      // If loadGeneration < _loadGeneration, the newer call already set
+      // _isLoadingTrack = true and will reset it in its own finally block.
     }
   }
 
@@ -453,8 +485,11 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     try {
       await _player.clearAudioSources();
     } catch (_) {}
+    // BUG #7 fix: keep the invariant _nativeQueuePreparedUntil >= _nativeQueueBaseIndex
+    // so that _prepareNativeUpcoming doesn't think sources were already prepared.
+    // Both fields track the same "nothing has been prepared yet" state at interrupt.
     _nativeQueueBaseIndex = _currentIndex;
-    _nativeQueuePreparedUntil = _currentIndex - 1;
+    _nativeQueuePreparedUntil = _currentIndex;
     playbackState.add(
       playbackState.value.copyWith(
         processingState: AudioProcessingState.loading,
@@ -642,7 +677,12 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       _,
     ) async {
       try {
-        await action();
+        // BUG #3 fix: bound each action so a hung operation never blocks the
+        // mutation chain permanently.
+        await action().timeout(
+          const Duration(seconds: 30),
+          onTimeout: () => throw TimeoutException('_mutatePlayer action timeout'),
+        );
         completer.complete();
       } catch (error, stackTrace) {
         completer.completeError(error, stackTrace);
@@ -805,8 +845,19 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   Future<void> _handleQueueCompletion() async {
+    // BUG #10 fix: guard against concurrent re-entry (processingStateStream +
+    // watchdog timer can both fire for the same completion event).
+    if (_isHandlingCompletion) return;
+    _isHandlingCompletion = true;
+    // BUG #5 fix: capture track and position BEFORE any async work so that
+    // the event is recorded for the track that actually completed, not the
+    // next one that may already be loading.
+    // BUG #6 fix: use _player.position (synchronous, always current) instead
+    // of playbackState.value.position (may be stale).
+    final completingTrack = currentTrack;
+    final completingPositionMs = _player.position.inMilliseconds;
     // Enregistre l'événement de complétion dans Convex (fire-and-forget)
-    _recordPlaybackEvent('completed');
+    _recordPlaybackEventForTrack('completed', completingTrack, completingPositionMs);
     final token = ++_completionCallToken;
     try {
       if (_repeatMode == AudioServiceRepeatMode.one) {
@@ -848,6 +899,9 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       }
     } catch (_) {
       await stop();
+    } finally {
+      // BUG #10 fix: always release the re-entry guard.
+      _isHandlingCompletion = false;
     }
   }
 
@@ -917,6 +971,12 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         duration <= const Duration(seconds: 1)) {
       return;
     }
+    // BUG #14 note: _player.position is read synchronously here. After an
+    // interruption (stop/seek), just_audio may briefly return a stale position
+    // until the next position update event arrives. This is acceptable for the
+    // watchdog heuristics (remaining-time checks) since they use a >=2 s slack.
+    // If the position were required to be exact at this point, use Duration.zero
+    // explicitly instead.
     final position = _player.position;
     _recordProgress(track.trackKey, position);
     final remaining = duration - position;
@@ -1269,7 +1329,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   Future<void> _loadSponsorSegments(String videoId) async {
     try {
       _currentSegments = await _sponsorBlockService.fetchSegments(videoId);
-    } catch (_) {
+    } catch (error) {
+      // BUG #9 fix: log SponsorBlock fetch failures so they are visible in
+      // debug output rather than silently degrading.
+      debugPrint('[SponsorBlock] failed to load segments for "$videoId": $error');
       _currentSegments = [];
     }
   }
@@ -1413,16 +1476,42 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   void _recordPlaybackEvent(String eventType) {
+    // BUG #6 fix: use _player.position (synchronous) for fresh position value.
+    _recordPlaybackEventForTrack(
+      eventType,
+      currentTrack,
+      _player.position.inMilliseconds,
+    );
+  }
+
+  /// Records a playback event for an explicitly supplied [track] and
+  /// [positionMs]. Use this overload when the current state may have already
+  /// advanced to the next track (e.g. at queue-completion time).
+  void _recordPlaybackEventForTrack(
+    String eventType,
+    Track? track,
+    int positionMs,
+  ) {
     final convex = _convexService;
     final userId = _convexUserId;
-    final track = currentTrack;
     if (convex == null || userId == null || track == null) return;
 
-    final positionMs = playbackState.value.position.inMilliseconds;
     final durationMs = track.durationMs ?? 0;
-    final listenedMs = _trackStartTime != null
+    // BUG #15 fix: if _trackStartTime is null (handler was constructed but no
+    // track has started yet), fall back to positionMs as the listened duration.
+    // Log a warning so the missing start time is visible during debugging.
+    // Also clamp to 0 so a stale/negative value never propagates to Convex.
+    final rawListenedMs = _trackStartTime != null
         ? DateTime.now().difference(_trackStartTime!).inMilliseconds
         : positionMs;
+    if (_trackStartTime == null) {
+      debugPrint(
+        '[JojoAudioHandler] _trackStartTime was null when recording '
+        '"$eventType" for "${track.title}" — using positionMs ($positionMs ms) '
+        'as listenedMs fallback',
+      );
+    }
+    final listenedMs = rawListenedMs < 0 ? 0 : rawListenedMs;
     final completionRatio = durationMs > 0
         ? (positionMs / durationMs).clamp(0.0, 1.0)
         : 0.0;

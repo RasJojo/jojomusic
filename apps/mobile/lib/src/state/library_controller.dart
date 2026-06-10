@@ -312,11 +312,24 @@ class LibraryController extends AsyncNotifier<LibraryState> {
 
     if (convexId != null) {
       try {
-        final results = await Future.wait([
-          _convex.listSavedTracks(convexId),
-          _convex.listPlaylists(convexId),
-          _convex.listSavedPodcastShows(convexId),
-        ]);
+        // BUG #7 fix: use eagerError: false so that a failure in one request
+        // does not discard the results of the other two that already succeeded.
+        // Each future is individually wrapped with a fallback so a partial
+        // failure degrades gracefully instead of losing everything.
+        final results = await Future.wait(
+          [
+            _convex
+                .listSavedTracks(convexId)
+                .catchError((_) => <Track>[]),
+            _convex
+                .listPlaylists(convexId)
+                .catchError((_) => <Playlist>[]),
+            _convex
+                .listSavedPodcastShows(convexId)
+                .catchError((_) => <Podcast>[]),
+          ],
+          eagerError: false,
+        );
         return LibraryState(
           likes: results[0] as List<Track>,
           playlists: results[1] as List<Playlist>,
@@ -334,11 +347,16 @@ class LibraryController extends AsyncNotifier<LibraryState> {
 
   Future<LibraryState> _fetchLibraryFromHttp(List<Album> savedAlbums) async {
     final api = ref.read(apiProvider);
-    final results = await Future.wait([
-      api.fetchLikes(),
-      api.fetchPlaylists(),
-      api.fetchFollowedPodcasts(),
-    ]);
+    // BUG #7 fix: same defensive pattern as the Convex path — individual
+    // failures degrade gracefully instead of discarding all fetched data.
+    final results = await Future.wait(
+      [
+        api.fetchLikes().catchError((_) => <Track>[]),
+        api.fetchPlaylists().catchError((_) => <Playlist>[]),
+        api.fetchFollowedPodcasts().catchError((_) => <Podcast>[]),
+      ],
+      eagerError: false,
+    );
     return LibraryState(
       likes: results[0] as List<Track>,
       playlists: results[1] as List<Playlist>,

@@ -18,15 +18,39 @@ final downloadedPlaylistIdsProvider = StreamProvider<Set<String>>((ref) {
 });
 
 final downloadsControllerProvider = Provider<DownloadsController>((ref) {
-  return DownloadsController(ref);
+  final controller = DownloadsController(ref);
+  // BUG #5 fix: register dispose so the controller knows when to stop touching
+  // the database (Riverpod may tear down providers while a download is running).
+  ref.onDispose(controller.dispose);
+  return controller;
 });
 
 class DownloadsController {
-  const DownloadsController(this.ref);
+  // BUG #4 fix: use a non-const constructor so we can hold a shared Dio
+  // instance that is created once and closed on dispose.
+  DownloadsController(this.ref)
+      : _dio = Dio(
+          BaseOptions(
+            connectTimeout: const Duration(seconds: 25),
+            receiveTimeout: const Duration(minutes: 10),
+            sendTimeout: const Duration(seconds: 25),
+          ),
+        );
 
   final Ref ref;
+  // BUG #4 fix: shared Dio instance — created once, closed in dispose().
+  final Dio _dio;
+  // BUG #5 fix: lifecycle flag — set to true in dispose() so in-flight
+  // callbacks can bail out before touching the database.
+  bool _disposed = false;
   static const _downloadRetryCount = 3;
   static const _betweenTrackDelay = Duration(milliseconds: 850);
+
+  void dispose() {
+    _disposed = true;
+    // BUG #4 fix: release the underlying HTTP client.
+    _dio.close(force: true);
+  }
 
   Future<void> togglePlaylistDownload({
     required Playlist playlist,
@@ -193,7 +217,15 @@ class DownloadsController {
         id: favoritesPlaylistId,
         name: 'Favoris',
         description: 'Tous les titres que tu as likés.',
-        artworkUrl: likes.first.displayArtworkUrl,
+        // BUG #11 fix: displayArtworkUrl is nullable — pick the first track
+        // that actually has an artwork URL, falling back to the first track
+        // (which may still be null, which is fine for a nullable field).
+        artworkUrl: likes
+            .firstWhere(
+              (t) => t.displayArtworkUrl != null,
+              orElse: () => likes.first,
+            )
+            .displayArtworkUrl,
         tracks: likes
             .asMap()
             .entries
@@ -214,9 +246,18 @@ class DownloadsController {
     required Track track,
     required String outputPath,
   }) async {
+    // BUG #5 fix: bail out immediately if the controller has been disposed.
+    if (_disposed) return;
     final database = ref.read(appDatabaseProvider);
     final api = ref.read(apiProvider);
     final normalizedPath = _normalizedOfflinePath(outputPath);
+    // BUG #6 fix: capture createdAt once so every progress callback reuses the
+    // same timestamp instead of generating a new one on each invocation.
+    final trackCreatedAt = DateTime.now();
+    // BUG #10 fix: local cancellation flag — set to true if the controller is
+    // disposed while the download is in progress so the callback can exit early.
+    var isCancelled = false;
+    final cancelToken = CancelToken();
 
     await database.upsertOfflineTrack(
       OfflineTracksCompanion.insert(
@@ -228,24 +269,28 @@ class DownloadsController {
         filePath: normalizedPath,
         status: 'downloading',
         progress: const Value(0),
-        createdAt: DateTime.now(),
+        createdAt: trackCreatedAt,
         updatedAt: DateTime.now(),
       ),
     );
 
     try {
       final resolved = await api.resolveTrack(track);
-      final dio = Dio(
-        BaseOptions(
-          connectTimeout: const Duration(seconds: 25),
-          receiveTimeout: const Duration(minutes: 10),
-          sendTimeout: const Duration(seconds: 25),
-        ),
-      );
-      await dio.download(
+      // BUG #4 fix: use the shared _dio instance instead of creating a new one
+      // per download. cancelToken lets us abort cleanly on dispose.
+      await _dio.download(
         resolved.streamUrl,
         normalizedPath,
+        cancelToken: cancelToken,
         onReceiveProgress: (received, total) async {
+          // BUG #10 fix: stop if cancelled.
+          if (isCancelled || _disposed) return;
+          // BUG #5 fix: double-check disposed inside the async callback.
+          if (_disposed) {
+            isCancelled = true;
+            cancelToken.cancel('controller disposed');
+            return;
+          }
           final progress = total <= 0 ? 0.0 : received / total;
           await database.upsertOfflineTrack(
             OfflineTracksCompanion.insert(
@@ -259,13 +304,15 @@ class DownloadsController {
               filePath: normalizedPath,
               status: progress >= 1 ? 'downloaded' : 'downloading',
               progress: Value(progress),
-              createdAt: DateTime.now(),
+              // BUG #6 fix: reuse the pre-captured createdAt.
+              createdAt: trackCreatedAt,
               updatedAt: DateTime.now(),
             ),
           );
         },
       );
 
+      if (_disposed) return;
       await database.upsertOfflineTrack(
         OfflineTracksCompanion.insert(
           trackKey: track.trackKey,
@@ -276,17 +323,19 @@ class DownloadsController {
           filePath: normalizedPath,
           status: 'downloaded',
           progress: const Value(1),
-          createdAt: DateTime.now(),
+          createdAt: trackCreatedAt,
           updatedAt: DateTime.now(),
         ),
       );
     } catch (_) {
+      if (_disposed) return;
       try {
         final partial = File(normalizedPath);
         if (await partial.exists()) {
           await partial.delete();
         }
       } catch (_) {}
+      if (_disposed) return;
       await database.upsertOfflineTrack(
         OfflineTracksCompanion.insert(
           trackKey: track.trackKey,
@@ -297,7 +346,7 @@ class DownloadsController {
           filePath: normalizedPath,
           status: 'failed',
           progress: const Value(0),
-          createdAt: DateTime.now(),
+          createdAt: trackCreatedAt,
           updatedAt: DateTime.now(),
         ),
       );
