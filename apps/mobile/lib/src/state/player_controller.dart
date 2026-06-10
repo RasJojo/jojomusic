@@ -32,8 +32,9 @@ final repeatModeProvider = StreamProvider<AudioServiceRepeatMode>((ref) {
   return ref.watch(audioHandlerProvider).playbackState.map((s) => s.repeatMode);
 });
 
-final sleepTimerProvider =
-    NotifierProvider<SleepTimerNotifier, DateTime?>(SleepTimerNotifier.new);
+final sleepTimerProvider = NotifierProvider<SleepTimerNotifier, DateTime?>(
+  SleepTimerNotifier.new,
+);
 
 class SleepTimerNotifier extends Notifier<DateTime?> {
   Timer? _timer;
@@ -64,8 +65,10 @@ final playerControllerProvider = Provider<PlayerController>((ref) {
   return PlayerController(ref);
 });
 
-final canvasUrlProvider =
-    FutureProvider.autoDispose.family<String?, String>((ref, videoId) {
+final canvasUrlProvider = FutureProvider.autoDispose.family<String?, String>((
+  ref,
+  videoId,
+) {
   if (videoId.isEmpty) return Future.value(null);
   return CanvasService().getCanvasUrl(videoId);
 });
@@ -99,8 +102,23 @@ class PlayerController {
             .catchError((_) {}),
       );
       ref.invalidate(homeControllerProvider);
+    } catch (error, stackTrace) {
+      debugPrint('JojoMusic playback failed: $error\n$stackTrace');
     } finally {
       pendingTrackKeyListenable.value = null;
+    }
+  }
+
+  Future<void> _guardPlaybackAction(
+    String label,
+    Future<void> Function() action,
+  ) async {
+    try {
+      await action();
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JojoMusic playback action failed [$label]: $error\n$stackTrace',
+      );
     }
   }
 
@@ -108,19 +126,21 @@ class PlayerController {
     if (episode.audioUrl == null || episode.audioUrl!.isEmpty) {
       return;
     }
-    await ref
-        .read(audioHandlerProvider)
-        .playDirectSource(
-          id: episode.episodeKey,
-          title: episode.title,
-          artist: episode.publisher ?? episode.podcastTitle,
-          album: episode.podcastTitle,
-          artworkUrl: episode.artworkUrl,
-          durationMs: episode.durationSeconds == null
-              ? null
-              : episode.durationSeconds! * 1000,
-          sourceUrl: episode.audioUrl!,
-        );
+    await _guardPlaybackAction('playPodcastEpisode', () {
+      return ref
+          .read(audioHandlerProvider)
+          .playDirectSource(
+            id: episode.episodeKey,
+            title: episode.title,
+            artist: episode.publisher ?? episode.podcastTitle,
+            album: episode.podcastTitle,
+            artworkUrl: episode.artworkUrl,
+            durationMs: episode.durationSeconds == null
+                ? null
+                : episode.durationSeconds! * 1000,
+            sourceUrl: episode.audioUrl!,
+          );
+    });
     unawaited(
       ref
           .read(apiProvider)
@@ -147,17 +167,27 @@ class PlayerController {
   Future<void> togglePlayPause() async {
     final state = ref.read(playbackStateProvider).asData?.value;
     final handler = ref.read(audioHandlerProvider);
-    if (state?.playing ?? false) {
-      await handler.pause();
-    } else {
-      await handler.play();
-    }
+    await _guardPlaybackAction('togglePlayPause', () async {
+      if (state?.playing ?? false) {
+        await handler.pause();
+      } else if (state?.processingState == AudioProcessingState.error ||
+          state?.processingState == AudioProcessingState.idle) {
+        await handler.retryCurrentTrack();
+      } else {
+        await handler.play();
+      }
+    });
   }
 
-  Future<void> skipNext() => ref.read(audioHandlerProvider).skipToNext();
+  Future<void> skipNext() => _guardPlaybackAction(
+    'skipNext',
+    ref.read(audioHandlerProvider).skipToNext,
+  );
 
-  Future<void> skipPrevious() =>
-      ref.read(audioHandlerProvider).skipToPrevious();
+  Future<void> skipPrevious() => _guardPlaybackAction(
+    'skipPrevious',
+    ref.read(audioHandlerProvider).skipToPrevious,
+  );
 
   Future<void> seek(Duration position) =>
       ref.read(audioHandlerProvider).seek(position);
@@ -179,8 +209,10 @@ class PlayerController {
     await seek(nextPosition);
   }
 
-  Future<void> playQueueItem(int index) =>
-      ref.read(audioHandlerProvider).skipToQueueItem(index);
+  Future<void> playQueueItem(int index) => _guardPlaybackAction(
+    'playQueueItem',
+    () => ref.read(audioHandlerProvider).skipToQueueItem(index),
+  );
 
   Future<void> toggleShuffle() =>
       ref.read(audioHandlerProvider).toggleShuffle();

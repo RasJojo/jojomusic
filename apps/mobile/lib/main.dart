@@ -1,4 +1,5 @@
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:convex_flutter/convex_flutter.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -15,13 +16,15 @@ import 'src/ui/theme/jojo_theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    statusBarBrightness: Brightness.dark,
-    statusBarIconBrightness: Brightness.light,
-    systemNavigationBarColor: Colors.black,
-    systemNavigationBarIconBrightness: Brightness.light,
-  ));
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarBrightness: Brightness.dark,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarColor: Colors.black,
+      systemNavigationBarIconBrightness: Brightness.light,
+    ),
+  );
   runApp(const _BootstrapApp());
 }
 
@@ -45,13 +48,20 @@ class _BootstrapAppState extends State<_BootstrapApp> {
 
       // Initialisation du client Convex (singleton)
       await ConvexClient.initialize(
-        ConvexConfig(deploymentUrl: environment.convexUrl, clientId: 'jojomusique-flutter'),
+        ConvexConfig(
+          deploymentUrl: environment.convexUrl,
+          clientId: 'jojomusique-flutter',
+        ),
       );
+      final audioSession = await AudioSession.instance;
+      await audioSession.configure(const AudioSessionConfiguration.music());
       final audioHandler = kIsWeb
           ? JojoAudioHandler(environment: environment, database: database)
           : await AudioService.init(
-              builder: () =>
-                  JojoAudioHandler(environment: environment, database: database),
+              builder: () => JojoAudioHandler(
+                environment: environment,
+                database: database,
+              ),
               config: const AudioServiceConfig(
                 androidNotificationChannelId: 'com.jojomusic.playback',
                 androidNotificationChannelName: 'JojoMusique Playback',

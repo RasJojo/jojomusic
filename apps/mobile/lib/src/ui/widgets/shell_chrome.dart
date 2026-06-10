@@ -17,6 +17,9 @@ class ShellChrome extends ConsumerWidget {
     this.topColor,
     this.popToRootOnNavigate = false,
     this.showProfileShortcut = true,
+    this.headerTitle,
+    this.showBackButton = false,
+    this.headerTrailing,
   });
 
   final Widget child;
@@ -24,6 +27,9 @@ class ShellChrome extends ConsumerWidget {
   final Color? topColor;
   final bool popToRootOnNavigate;
   final bool showProfileShortcut;
+  final String? headerTitle;
+  final bool showBackButton;
+  final Widget? headerTrailing;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -77,18 +83,36 @@ class ShellChrome extends ConsumerWidget {
             )
           : Column(
               children: [
-                if (showProfileShortcut)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 10, 18, 0),
-                    child: Align(
-                      alignment: Alignment.topRight,
-                      child: _ProfileShortcutButton(
-                        onPressed: onProfilePressed,
-                        compact: true,
-                      ),
+                Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 12, 18, 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        if (showBackButton)
+                          IconButton(
+                            icon: const Icon(Icons.arrow_back_rounded),
+                            onPressed: () => Navigator.of(context).pop(),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        if (headerTitle != null)
+                          Expanded(
+                            child: Text(
+                              headerTitle!,
+                              style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          )
+                        else
+                          const Spacer(),
+                        ?headerTrailing,
+                        if (showProfileShortcut)
+                          _ProfileShortcutButton(
+                            onPressed: onProfilePressed,
+                            compact: true,
+                          ),
+                      ],
                     ),
                   ),
-                if (showProfileShortcut) const SizedBox(height: 8),
                 Expanded(child: child),
               ],
             ),
@@ -137,7 +161,7 @@ class _ProfileShortcutButton extends ConsumerWidget {
           width: compact ? 40 : 48,
           height: compact ? 40 : 48,
           decoration: BoxDecoration(
-            color: const Color(0xD90A1718),
+            color: Colors.white.withValues(alpha: 0.10),
             borderRadius: BorderRadius.circular(compact ? 20 : 24),
             border: Border.all(color: const Color(0x1FFFFFFF)),
             boxShadow: const [
@@ -196,7 +220,7 @@ class _ShellSideRail extends ConsumerWidget {
           minWidth: 86,
           minExtendedWidth: 108,
           groupAlignment: -0.92,
-          labelType: NavigationRailLabelType.all,
+          labelType: NavigationRailLabelType.none,
           indicatorColor: JojoColors.surfaceBright,
           destinations: const [
             NavigationRailDestination(
@@ -221,21 +245,9 @@ class _ShellSideRail extends ConsumerWidget {
               Navigator.of(context).popUntil((route) => route.isFirst);
             }
           },
-          leading: Padding(
-            padding: const EdgeInsets.only(top: 8, bottom: 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const JojoLogo(size: 52, borderRadius: 18),
-                const SizedBox(height: 10),
-                Text(
-                  'JojoMusique',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ],
-            ),
+          leading: const Padding(
+            padding: EdgeInsets.only(top: 8, bottom: 16),
+            child: JojoLogo(size: 48),
           ),
         ),
       ),

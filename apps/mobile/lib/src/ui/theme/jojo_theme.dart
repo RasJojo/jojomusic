@@ -2,18 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 class JojoColors {
-  static const canvas = Color(0xFF041010);
-  static const surface = Color(0xFF0A1718);
-  static const surfaceRaised = Color(0xFF102224);
-  static const surfaceBright = Color(0xFF153033);
+  static const canvas = Colors.black;
+  static const surface = Color(0x14FFFFFF); // 8% white glass
+  static const surfaceRaised = Color(0x1FFFFFFF); // 12% white glass
+  static const surfaceBright = Color(0x29FFFFFF); // 16% white glass
   static const line = Color(0x1FFFFFFF);
-  static const primary = Color(0xFF61F5B9);
-  static const primaryStrong = Color(0xFF1ED48F);
+  static const primary = Colors.white;
+  static const primaryStrong = Colors.white;
   static const secondary = Color(0xFFFE8A3E);
   static const tertiary = Color(0xFF5FD1FF);
-  static const text = Color(0xFFF4FFFC);
-  static const muted = Color(0xFFA0B8B1);
-  static const mutedStrong = Color(0xFFC1D8D2);
+  static const danger = Color(0xFFFF6B6B);
+  static const text = Colors.white;
+  static const muted = Color(0x80FFFFFF); // 50% white
+  static const mutedStrong = Color(0xB3FFFFFF); // 70% white
 }
 
 ThemeData buildJojoTheme() {
@@ -21,12 +22,16 @@ ThemeData buildJojoTheme() {
     brightness: Brightness.dark,
     useMaterial3: true,
     colorScheme: const ColorScheme.dark(
-      primary: JojoColors.primary,
+      primary: Colors.white,
+      primaryContainer: Color(0x29FFFFFF),
       secondary: JojoColors.secondary,
-      surface: JojoColors.surface,
+      secondaryContainer: Color(0x1FFFFFFF),
+      tertiary: JojoColors.tertiary,
+      surface: Colors.black,
       onPrimary: Colors.black,
       onSecondary: Colors.black,
-      onSurface: JojoColors.text,
+      onSurface: Colors.white,
+      onSurfaceVariant: Color(0xB3FFFFFF),
     ),
   );
 
@@ -125,8 +130,8 @@ ThemeData buildJojoTheme() {
       ),
     ),
     navigationBarTheme: NavigationBarThemeData(
-      backgroundColor: const Color(0xFF081415),
-      height: 84,
+      backgroundColor: Colors.black,
+      height: 64,
       indicatorColor: JojoColors.surfaceBright,
       labelTextStyle: WidgetStateProperty.resolveWith((states) {
         final selected = states.contains(WidgetState.selected);
@@ -176,12 +181,12 @@ ThemeData buildJojoTheme() {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(20),
-        borderSide: const BorderSide(color: JojoColors.primary, width: 1.2),
+        borderSide: const BorderSide(color: Colors.white, width: 1.2),
       ),
     ),
     bottomSheetTheme: const BottomSheetThemeData(
-      backgroundColor: JojoColors.surface,
-      modalBackgroundColor: JojoColors.surface,
+      backgroundColor: Color(0xFF0D0D0D),
+      modalBackgroundColor: Color(0xFF0D0D0D),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
       ),
@@ -192,7 +197,7 @@ ThemeData buildJojoTheme() {
       contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
     ),
     dialogTheme: DialogThemeData(
-      backgroundColor: JojoColors.surface,
+      backgroundColor: const Color(0xFF161616),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
     ),
   );

@@ -22,13 +22,61 @@ class PlaylistScreen extends ConsumerWidget {
     final downloadedPlaylistIds = ref.watch(downloadedPlaylistIdsProvider);
     final downloads = ref.watch(downloadsProvider);
 
+    final isFavoritesPlaylist = playlistId == favoritesPlaylistId;
+    String playlistTitle = 'Playlist';
+    Playlist? headerPlaylist;
+    if (library.asData != null) {
+      final d = library.asData!.value;
+      if (isFavoritesPlaylist) {
+        headerPlaylist = d.favoritesPlaylist;
+        playlistTitle = headerPlaylist?.name ?? 'Favoris';
+      } else {
+        for (final item in d.playlists) {
+          if (item.id == playlistId) {
+            headerPlaylist = item;
+            playlistTitle = item.name;
+            break;
+          }
+        }
+      }
+    }
+
     return ShellChrome(
       topColor: const Color(0xFF183437),
       popToRootOnNavigate: true,
       onProfilePressed: () => openProfileScreen(context),
+      headerTitle: playlistTitle,
+      showBackButton: true,
+      showProfileShortcut: false,
+      headerTrailing: (!isFavoritesPlaylist && headerPlaylist != null)
+          ? Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.edit_outlined),
+                  onPressed: () => _showEditPlaylistDialog(
+                    context,
+                    ref,
+                    headerPlaylist!,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Modifier',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline_rounded),
+                  onPressed: () => _confirmDeletePlaylist(
+                    context,
+                    ref,
+                    headerPlaylist!,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Supprimer',
+                ),
+              ],
+            )
+          : null,
       child: library.when(
         data: (data) {
-          final isFavoritesPlaylist = playlistId == favoritesPlaylistId;
           Playlist? playlist = isFavoritesPlaylist
               ? data.favoritesPlaylist
               : null;
@@ -82,199 +130,195 @@ class PlaylistScreen extends ConsumerWidget {
                 )
               : 'Active ce mode pour garder toute la playlist disponible sans connexion.';
 
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 148),
-            children: [
-              JojoPageHeader(
-                title: currentPlaylist.name,
-                subtitle: isFavoritesPlaylist ? 'Favoris' : 'Playlist',
-                leading: JojoIconButton(
-                  icon: Icons.arrow_back_rounded,
-                  onPressed: () => Navigator.of(context).pop(),
-                ),
-                trailing: isFavoritesPlaylist
-                    ? null
-                    : Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          JojoIconButton(
-                            icon: Icons.edit_outlined,
-                            onPressed: () => _showEditPlaylistDialog(
-                              context,
-                              ref,
-                              currentPlaylist,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          JojoIconButton(
-                            icon: Icons.delete_outline_rounded,
-                            onPressed: () => _confirmDeletePlaylist(
-                              context,
-                              ref,
-                              currentPlaylist,
-                            ),
-                          ),
-                        ],
+          final headerSliver = SliverPadding(
+            padding: const EdgeInsets.fromLTRB(18, 8, 18, 0),
+            sliver: SliverToBoxAdapter(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  JojoHeroPanel(
+                    label: isFavoritesPlaylist ? 'Playlist auto' : 'Playlist perso',
+                    title: currentPlaylist.name,
+                    subtitle: currentPlaylist.description.isEmpty
+                        ? isFavoritesPlaylist
+                              ? 'Tes titres aimés, regroupés comme une playlist.'
+                              : 'Ta sélection locale modifiable.'
+                        : currentPlaylist.description,
+                    artworkUrl: currentPlaylist.displayArtworkUrl,
+                    accentColor: const Color(0xFF1A3D40),
+                    metadata: ['${currentPlaylist.tracks.length} titres'],
+                    actions: [
+                      FilledButton.icon(
+                        onPressed: tracks.isEmpty
+                            ? null
+                            : () => ref
+                                  .read(playerControllerProvider)
+                                  .playTrack(tracks.first, queue: tracks),
+                        icon: const Icon(Icons.play_arrow_rounded),
+                        label: const Text('Lire'),
                       ),
-              ),
-              const SizedBox(height: 18),
-              JojoHeroPanel(
-                label: isFavoritesPlaylist ? 'Playlist auto' : 'Playlist perso',
-                title: currentPlaylist.name,
-                subtitle: currentPlaylist.description.isEmpty
-                    ? isFavoritesPlaylist
-                          ? 'Tes titres aimés, regroupés comme une playlist.'
-                          : 'Ta sélection locale modifiable.'
-                    : currentPlaylist.description,
-                artworkUrl: currentPlaylist.displayArtworkUrl,
-                accentColor: const Color(0xFF1A3D40),
-                metadata: ['${currentPlaylist.tracks.length} titres'],
-                actions: [
-                  FilledButton.icon(
-                    onPressed: tracks.isEmpty
-                        ? null
-                        : () => ref
-                              .read(playerControllerProvider)
-                              .playTrack(tracks.first, queue: tracks),
-                    icon: const Icon(Icons.play_arrow_rounded),
-                    label: const Text('Lire la playlist'),
+                      OutlinedButton.icon(
+                        onPressed: tracks.isEmpty
+                            ? null
+                            : () {
+                                final shuffled = [...tracks]..shuffle();
+                                ref
+                                    .read(playerControllerProvider)
+                                    .playTrack(shuffled.first, queue: shuffled);
+                              },
+                        icon: const Icon(Icons.shuffle_rounded),
+                        label: const Text('Aléatoire'),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              JojoSurfaceCard(
-                child: Row(
-                  children: [
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        color: isDownloaded
-                            ? JojoColors.primary.withValues(alpha: 0.16)
-                            : JojoColors.surfaceBright,
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Icon(
-                        isDownloaded
-                            ? Icons.download_done_rounded
-                            : Icons.download_for_offline_rounded,
-                        color: isDownloaded
-                            ? JojoColors.primary
-                            : JojoColors.mutedStrong,
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Hors ligne',
-                            style: Theme.of(context).textTheme.titleMedium,
+                  const SizedBox(height: 14),
+                  JojoSurfaceCard(
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: isDownloaded
+                                ? JojoColors.primary.withValues(alpha: 0.16)
+                                : JojoColors.surfaceBright,
+                            borderRadius: BorderRadius.circular(16),
                           ),
-                          const SizedBox(height: 4),
-                          Text(
+                          child: Icon(
                             isDownloaded
-                                ? 'Les nouveaux titres ajoutés seront téléchargés automatiquement.'
-                                : 'Active ce mode pour garder toute la playlist disponible sans connexion.',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            offlineSummary,
-                            style: Theme.of(context).textTheme.bodyMedium
-                                ?.copyWith(
-                                  color: isDownloaded
-                                      ? JojoColors.text
-                                      : JojoColors.mutedStrong,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Switch.adaptive(
-                      value: isDownloaded,
-                      onChanged: (_) async {
-                        final messenger = ScaffoldMessenger.of(context);
-                        try {
-                          await ref
-                              .read(downloadsControllerProvider)
-                              .togglePlaylistDownload(
-                                playlist: currentPlaylist,
-                                playlists: data.playlists,
-                                likes: data.likes,
-                              );
-                          if (!context.mounted) {
-                            return;
-                          }
-                          messenger.showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                isDownloaded
-                                    ? 'Mode hors ligne désactivé pour ${currentPlaylist.name}.'
-                                    : 'Mode hors ligne activé pour ${currentPlaylist.name}.',
-                              ),
-                            ),
-                          );
-                        } catch (error) {
-                          if (!context.mounted) {
-                            return;
-                          }
-                          messenger.showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                'Impossible de changer le mode hors ligne: $error',
-                              ),
-                            ),
-                          );
-                        }
-                      },
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 22),
-              JojoSurfaceCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const JojoSectionHeading(
-                      title: 'Titres',
-                      subtitle: 'Lecture directe et suppression par morceau.',
-                    ),
-                    const SizedBox(height: 12),
-                    if (currentPlaylist.tracks.isEmpty)
-                      const JojoStateMessage(
-                        icon: Icons.queue_music_rounded,
-                        message: 'Cette playlist est vide.',
-                      )
-                    else
-                      ...currentPlaylist.tracks.asMap().entries.map(
-                        (entry) => Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: JojoTrackTile(
-                            track: entry.value.track,
-                            index: entry.key,
-                            onTap: () => ref
-                                .read(playerControllerProvider)
-                                .playTrack(entry.value.track, queue: tracks),
-                            statusIndicator: _OfflineTrackIndicator(
-                              track:
-                                  offlineByTrackKey[entry.value.track.trackKey],
-                            ),
-                            onMore: () => _showTrackActions(
-                              context,
-                              ref,
-                              currentPlaylist,
-                              entry.value,
-                              isFavoritesPlaylist: isFavoritesPlaylist,
-                            ),
+                                ? Icons.download_done_rounded
+                                : Icons.download_for_offline_rounded,
+                            color: isDownloaded
+                                ? JojoColors.primary
+                                : JojoColors.mutedStrong,
                           ),
                         ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Hors ligne',
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                isDownloaded
+                                    ? 'Les nouveaux titres ajoutés seront téléchargés automatiquement.'
+                                    : 'Active ce mode pour garder toute la playlist disponible sans connexion.',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                offlineSummary,
+                                style: Theme.of(context).textTheme.bodyMedium
+                                    ?.copyWith(
+                                      color: isDownloaded
+                                          ? JojoColors.text
+                                          : JojoColors.mutedStrong,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Switch.adaptive(
+                          value: isDownloaded,
+                          onChanged: (_) async {
+                            final messenger = ScaffoldMessenger.of(context);
+                            try {
+                              await ref
+                                  .read(downloadsControllerProvider)
+                                  .togglePlaylistDownload(
+                                    playlist: currentPlaylist,
+                                    playlists: data.playlists,
+                                    likes: data.likes,
+                                  );
+                              if (!context.mounted) {
+                                return;
+                              }
+                              messenger.showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    isDownloaded
+                                        ? 'Mode hors ligne désactivé pour ${currentPlaylist.name}.'
+                                        : 'Mode hors ligne activé pour ${currentPlaylist.name}.',
+                                  ),
+                                ),
+                              );
+                            } catch (error) {
+                              if (!context.mounted) {
+                                return;
+                              }
+                              messenger.showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    'Impossible de changer le mode hors ligne: $error',
+                                  ),
+                                ),
+                              );
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  const JojoSectionHeading(title: 'Titres'),
+                  const SizedBox(height: 12),
+                ],
+              ),
+            ),
+          );
+
+          if (currentPlaylist.tracks.isEmpty) {
+            return CustomScrollView(
+              slivers: [
+                headerSliver,
+                const SliverPadding(
+                  padding: EdgeInsets.fromLTRB(18, 0, 18, 148),
+                  sliver: SliverToBoxAdapter(
+                    child: JojoStateMessage(
+                      icon: Icons.queue_music_rounded,
+                      message: 'Cette playlist est vide.',
+                    ),
+                  ),
+                ),
+              ],
+            );
+          }
+
+          return CustomScrollView(
+            slivers: [
+              headerSliver,
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(18, 0, 18, 148),
+                sliver: SliverList.builder(
+                  itemCount: currentPlaylist.tracks.length,
+                  itemBuilder: (context, index) {
+                    final entry = currentPlaylist.tracks[index];
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: JojoTrackTile(
+                        track: entry.track,
+                        onTap: () => ref
+                            .read(playerControllerProvider)
+                            .playTrack(entry.track, queue: tracks),
+                        statusIndicator: _OfflineTrackIndicator(
+                          track: offlineByTrackKey[entry.track.trackKey],
+                        ),
+                        onMore: () => _showTrackActions(
+                          context,
+                          ref,
+                          currentPlaylist,
+                          entry,
+                          isFavoritesPlaylist: isFavoritesPlaylist,
+                        ),
                       ),
-                  ],
+                    );
+                  },
                 ),
               ),
             ],

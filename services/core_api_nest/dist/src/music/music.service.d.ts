@@ -23,6 +23,9 @@ export declare class MusicService {
     private podcastSearchVariants;
     private itunesPodcastSearch;
     podcastDetails(podcastKey: string): Promise<PodcastDetailsResponse>;
+    trackArtwork(artist: string, title: string): Promise<{
+        artwork_url: string | null;
+    }>;
     lyrics(artist: string, title: string): Promise<LyricsResponse | null>;
     resolveTrack(payload: {
         track?: TrackPayload;

@@ -1,0 +1,24 @@
+{
+  "name": "jojomusic",
+  "version": "1.0.0",
+  "description": "Plateforme musicale self-hosted avec recherche multi-source, lecteur audio natif, et synchronisation cross-device. Clone Spotify personnalisé optimisé pour la découverte et les playlists privées.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RasJojo/jojomusic.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/RasJojo/jojomusic/issues"
+  },
+  "homepage": "https://github.com/RasJojo/jojomusic#readme",
+  "dependencies": {
+    "convex": "^1.39.1"
+  }
+}

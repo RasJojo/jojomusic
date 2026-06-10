@@ -427,20 +427,45 @@ let MusicService = class MusicService {
         ]);
         return { podcast: managedPodcast, episodes: managedEpisodes };
     }
+    async trackArtwork(artist, title) {
+        const primaryArtist = artist.split(/\s*(?:&|,|feat\.?|ft\.?|featuring|avec)\s*/i)[0].trim();
+        const artistVariants = this.dedupeNonEmpty([primaryArtist, artist]);
+        for (const artistVariant of artistVariants) {
+            const url = new URL(`${ITUNES_BASE}/search`);
+            url.searchParams.set('term', `${artistVariant} ${title}`);
+            url.searchParams.set('entity', 'song');
+            url.searchParams.set('limit', '5');
+            url.searchParams.set('media', 'music');
+            const payload = await (0, http_util_1.fetchJson)(url, undefined, 5000).catch(() => null);
+            const result = this.asList(payload?.results).find((r) => r.artworkUrl100);
+            if (result?.artworkUrl100) {
+                return { artwork_url: this.upscaleArtwork(result.artworkUrl100) };
+            }
+        }
+        if (this.appConfig.lastfmApiKey) {
+            for (const artistVariant of artistVariants) {
+                const payload = await this.lastfm('track.getInfo', { artist: artistVariant, track: title }).catch(() => null);
+                const albumImage = this.chooseLastfmImage(payload?.track?.album?.image);
+                if (albumImage) {
+                    return { artwork_url: albumImage };
+                }
+            }
+        }
+        return { artwork_url: null };
+    }
     async lyrics(artist, title) {
-        const genius = await this.fetchGeniusLyrics(artist, title).catch(() => null);
-        if (genius) {
-            return genius;
-        }
-        const tononkira = await this.fetchTononkiraLyrics(artist, title).catch(() => null);
-        if (tononkira) {
-            return tononkira;
-        }
-        const lrclib = await this.fetchLrclibLyrics(artist, title).catch(() => null);
-        if (lrclib) {
+        const [lrclib, genius, tononkira] = await Promise.all([
+            this.fetchLrclibLyrics(artist, title).catch(() => null),
+            this.fetchGeniusLyrics(artist, title).catch(() => null),
+            this.fetchTononkiraLyrics(artist, title).catch(() => null),
+        ]);
+        if (lrclib?.synced_lyrics)
             return lrclib;
-        }
-        return null;
+        if (genius)
+            return genius;
+        if (tononkira)
+            return tononkira;
+        return lrclib ?? null;
     }
     async resolveTrack(payload) {
         const query = payload.track
@@ -1277,56 +1302,76 @@ let MusicService = class MusicService {
         };
     }
     async fetchLrclibLyrics(artist, title) {
-        const url = new URL('/api/search', this.appConfig.lrclibBaseUrl);
-        url.searchParams.set('track_name', title);
-        url.searchParams.set('artist_name', artist);
-        const payload = await (0, http_util_1.fetchJson)(url, undefined, 6000).catch(() => []);
-        const candidate = payload[0];
-        if (!candidate) {
-            return null;
+        const primaryArtist = artist.split(/\s*(?:&|,|feat\.?|ft\.?|featuring|avec)\s*/i)[0].trim();
+        const artistVariants = this.dedupeNonEmpty([primaryArtist, artist]);
+        for (const artistVariant of artistVariants) {
+            const url = new URL('/api/search', this.appConfig.lrclibBaseUrl);
+            url.searchParams.set('track_name', title);
+            url.searchParams.set('artist_name', artistVariant);
+            const payload = await (0, http_util_1.fetchJson)(url, undefined, 6000).catch(() => []);
+            const candidate = payload[0];
+            if (candidate) {
+                return {
+                    artist,
+                    title,
+                    plain_lyrics: candidate.plainLyrics ?? null,
+                    synced_lyrics: candidate.syncedLyrics ?? null,
+                    provider: 'lrclib',
+                };
+            }
         }
-        return {
-            artist,
-            title,
-            plain_lyrics: candidate.plainLyrics ?? null,
-            synced_lyrics: candidate.syncedLyrics ?? null,
-            provider: 'lrclib',
-        };
+        return null;
     }
     async fetchGeniusLyrics(artist, title) {
         if (!this.appConfig.geniusAccessToken) {
             return null;
         }
-        const search = new URL('https://api.genius.com/search');
-        search.searchParams.set('q', `${artist} ${title}`);
-        const payload = await (0, http_util_1.fetchJson)(search, {
-            headers: { Authorization: `Bearer ${this.appConfig.geniusAccessToken}` },
-        }, 6000).catch(() => null);
-        const hit = this.asList(payload?.response?.hits).find((entry) => this.normalizeLyricsValue(`${entry.result?.primary_artist?.name ?? ''}`).includes(this.normalizeLyricsValue(artist)));
-        const pageUrl = hit?.result?.url;
-        if (!pageUrl) {
-            return null;
-        }
-        const html = await (0, http_util_1.fetchText)(pageUrl, undefined, 8000).catch(() => null);
-        if (!html) {
-            return null;
-        }
-        const match = html.match(/"lyricsData":\{"body":\{"html":"([^"]+)"/) ??
-            html.match(/<div data-lyrics-container="true">([\s\S]*?)<\/div>/);
-        if (!match?.[1]) {
-            return null;
-        }
-        const plain = this.sanitizeGeniusLyrics(this.htmlToTextWithBreaks(match[1]));
-        if (!plain) {
-            return null;
-        }
-        return {
+        const normalizedArtist = this.normalizeLyricsValue(artist);
+        const normalizedTitle = this.normalizeLyricsValue(title);
+        const artistVariants = this.dedupeNonEmpty([
+            artist.split(/\s*(?:&|,|feat\.?|ft\.?|featuring|avec)\s*/i)[0].trim(),
             artist,
+        ]);
+        const searchQueries = this.dedupeNonEmpty([
+            ...artistVariants.map((a) => `${a} ${title}`),
             title,
-            plain_lyrics: plain,
-            synced_lyrics: null,
-            provider: 'genius',
-        };
+        ]);
+        for (const q of searchQueries) {
+            const search = new URL('https://api.genius.com/search');
+            search.searchParams.set('q', q);
+            const payload = await (0, http_util_1.fetchJson)(search, { headers: { Authorization: `Bearer ${this.appConfig.geniusAccessToken}` } }, 6000).catch(() => null);
+            const hit = this.asList(payload?.response?.hits).find((entry) => {
+                const primaryArtist = this.normalizeLyricsValue(`${entry.result?.primary_artist?.name ?? ''}`);
+                const featuredArtists = this.asList(entry.result?.featured_artists).map((a) => this.normalizeLyricsValue(`${a?.name ?? ''}`));
+                const allArtists = [primaryArtist, ...featuredArtists].join(' ');
+                const candidateTitle = this.normalizeLyricsValue(`${entry.result?.title ?? ''}`);
+                const titleMatch = candidateTitle.includes(normalizedTitle) || normalizedTitle.includes(candidateTitle);
+                const artistMatch = allArtists.includes(normalizedArtist) ||
+                    normalizedArtist.includes(primaryArtist) ||
+                    artistVariants.some((v) => {
+                        const nv = this.normalizeLyricsValue(v);
+                        return allArtists.includes(nv) || nv.includes(primaryArtist);
+                    });
+                return titleMatch && artistMatch;
+            });
+            if (!hit)
+                continue;
+            const pageUrl = hit.result?.url;
+            if (!pageUrl)
+                continue;
+            const html = await (0, http_util_1.fetchText)(pageUrl, undefined, 8000).catch(() => null);
+            if (!html)
+                continue;
+            const match = html.match(/"lyricsData":\{"body":\{"html":"([^"]+)"/) ??
+                html.match(/<div data-lyrics-container="true">([\s\S]*?)<\/div>/);
+            if (!match?.[1])
+                continue;
+            const plain = this.sanitizeGeniusLyrics(this.htmlToTextWithBreaks(match[1]));
+            if (!plain)
+                continue;
+            return { artist, title, plain_lyrics: plain, synced_lyrics: null, provider: 'genius' };
+        }
+        return null;
     }
     async fetchTononkiraLyrics(artist, title) {
         let bestPayload = null;

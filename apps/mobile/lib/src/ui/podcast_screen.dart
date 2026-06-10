@@ -40,9 +40,6 @@ class PodcastScreen extends ConsumerWidget {
             JojoHeroPanel(
               label: 'Show',
               title: data.podcast.title,
-              subtitle: data.podcast.description?.isNotEmpty == true
-                  ? data.podcast.description!
-                  : data.podcast.publisher,
               artworkUrl: data.podcast.artworkUrl,
               accentColor: const Color(0xFF3C2030),
               metadata: [

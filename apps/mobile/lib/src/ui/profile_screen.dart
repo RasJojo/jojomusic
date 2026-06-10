@@ -9,6 +9,7 @@ import '../state/library_controller.dart';
 import '../state/providers.dart';
 import '../state/session_controller.dart';
 import 'podcast_screen.dart';
+import 'settings_screen.dart';
 import 'widgets/jojo_surfaces.dart';
 import 'widgets/shell_chrome.dart';
 
@@ -64,6 +65,16 @@ class ProfileScreen extends ConsumerWidget {
           const SizedBox(height: 18),
           _SpotifyIntegrationPanel(spotify: spotify),
           const SizedBox(height: 18),
+          FilledButton.tonalIcon(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const SettingsScreen(),
+              ),
+            ),
+            icon: const Icon(Icons.tune_rounded),
+            label: const Text('Réglages'),
+          ),
+          const SizedBox(height: 12),
           FilledButton.tonal(
             onPressed: () => ref.read(sessionControllerProvider.notifier).logout(),
             child: const Text('Déconnexion'),
@@ -148,7 +159,7 @@ class _SpotifyIntegrationPanel extends ConsumerWidget {
                 children: [
                   CircleAvatar(
                     radius: 26,
-                    backgroundColor: const Color(0xFF153033),
+                    backgroundColor: Colors.white.withValues(alpha: 0.12),
                     backgroundImage: integration.avatarUrl == null
                         ? null
                         : NetworkImage(integration.avatarUrl!),

@@ -38,9 +38,8 @@ class LibraryState {
   bool isInPlaylist(String playlistId, Track track) =>
       playlistIdsForTrack(track).contains(playlistId);
 
-  bool isPodcastFollowed(Podcast podcast) => followedPodcasts.any(
-    (item) => item.podcastKey == podcast.podcastKey,
-  );
+  bool isPodcastFollowed(Podcast podcast) =>
+      followedPodcasts.any((item) => item.podcastKey == podcast.podcastKey);
 
   Playlist? get favoritesPlaylist {
     if (likes.isEmpty) return null;
@@ -49,12 +48,16 @@ class LibraryState {
       name: 'Favoris',
       description: 'Tous les titres que tu as likés.',
       artworkUrl: likes.first.displayArtworkUrl,
-      tracks: likes.asMap().entries
-          .map((entry) => PlaylistTrackItem(
-                id: 'favorite:${entry.value.trackKey}',
-                position: entry.key,
-                track: entry.value,
-              ))
+      tracks: likes
+          .asMap()
+          .entries
+          .map(
+            (entry) => PlaylistTrackItem(
+              id: 'favorite:${entry.value.trackKey}',
+              position: entry.key,
+              track: entry.value,
+            ),
+          )
           .toList(growable: false),
     );
   }
@@ -119,7 +122,10 @@ class LibraryController extends AsyncNotifier<LibraryState> {
 
     if (convexId != null) {
       if (liked) {
-        await _convex.unsaveTrack(convexUserId: convexId, trackKey: track.trackKey);
+        await _convex.unsaveTrack(
+          convexUserId: convexId,
+          trackKey: track.trackKey,
+        );
       } else {
         await _convex.saveTrack(convexUserId: convexId, track: track);
       }
@@ -181,20 +187,24 @@ class LibraryController extends AsyncNotifier<LibraryState> {
         description: description,
       );
     } else {
-      await ref.read(apiProvider).updatePlaylist(
+      await ref
+          .read(apiProvider)
+          .updatePlaylist(
             playlistId: playlistId,
             name: name,
             description: description,
           );
     }
     await refresh();
-    final updated = state.asData?.value.playlists
-        .firstWhere((p) => p.id == playlistId, orElse: () => Playlist(
-              id: playlistId,
-              name: name,
-              description: description ?? '',
-              tracks: [],
-            ));
+    final updated = state.asData?.value.playlists.firstWhere(
+      (p) => p.id == playlistId,
+      orElse: () => Playlist(
+        id: playlistId,
+        name: name,
+        description: description ?? '',
+        tracks: [],
+      ),
+    );
     return updated!;
   }
 
@@ -210,10 +220,9 @@ class LibraryController extends AsyncNotifier<LibraryState> {
         track: track,
       );
     } else {
-      await ref.read(apiProvider).addTrackToPlaylist(
-            playlistId: playlistId,
-            track: track,
-          );
+      await ref
+          .read(apiProvider)
+          .addTrackToPlaylist(playlistId: playlistId, track: track);
     }
     await refresh();
   }
@@ -244,10 +253,9 @@ class LibraryController extends AsyncNotifier<LibraryState> {
         trackKey: trackKey,
       );
     } else {
-      await ref.read(apiProvider).removeTrackFromPlaylist(
-            playlistId: playlistId,
-            trackKey: trackKey,
-          );
+      await ref
+          .read(apiProvider)
+          .removeTrackFromPlaylist(playlistId: playlistId, trackKey: trackKey);
     }
     await refresh();
   }
@@ -303,20 +311,28 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     final savedAlbums = await _loadSavedAlbums();
 
     if (convexId != null) {
-      final results = await Future.wait([
-        _convex.listSavedTracks(convexId),
-        _convex.listPlaylists(convexId),
-        _convex.listSavedPodcastShows(convexId),
-      ]);
-      return LibraryState(
-        likes: results[0] as List<Track>,
-        playlists: results[1] as List<Playlist>,
-        followedPodcasts: results[2] as List<Podcast>,
-        savedAlbums: savedAlbums,
-      );
+      try {
+        final results = await Future.wait([
+          _convex.listSavedTracks(convexId),
+          _convex.listPlaylists(convexId),
+          _convex.listSavedPodcastShows(convexId),
+        ]);
+        return LibraryState(
+          likes: results[0] as List<Track>,
+          playlists: results[1] as List<Playlist>,
+          followedPodcasts: results[2] as List<Podcast>,
+          savedAlbums: savedAlbums,
+        );
+      } catch (_) {
+        return _fetchLibraryFromHttp(savedAlbums);
+      }
     }
 
     // Fallback NestJS si pas de Convex user
+    return _fetchLibraryFromHttp(savedAlbums);
+  }
+
+  Future<LibraryState> _fetchLibraryFromHttp(List<Album> savedAlbums) async {
     final api = ref.read(apiProvider);
     final results = await Future.wait([
       api.fetchLikes(),
@@ -334,8 +350,9 @@ class LibraryController extends AsyncNotifier<LibraryState> {
   // ── Saved albums (local only) ─────────────────────────────────────────────
 
   Future<List<Album>> _loadSavedAlbums() async {
-    final encoded =
-        ref.read(sharedPreferencesProvider).getString(_savedAlbumsKey);
+    final encoded = ref
+        .read(sharedPreferencesProvider)
+        .getString(_savedAlbumsKey);
     if (encoded == null || encoded.isEmpty) return [];
     try {
       final list = jsonDecode(encoded) as List<dynamic>;
@@ -348,7 +365,9 @@ class LibraryController extends AsyncNotifier<LibraryState> {
   }
 
   Future<void> _persistSavedAlbums(List<Album> albums) async {
-    await ref.read(sharedPreferencesProvider).setString(
+    await ref
+        .read(sharedPreferencesProvider)
+        .setString(
           _savedAlbumsKey,
           jsonEncode(albums.map((a) => a.toJson()).toList()),
         );
@@ -365,56 +384,67 @@ class LibraryController extends AsyncNotifier<LibraryState> {
       saved.insert(0, album);
     }
     await _persistSavedAlbums(saved);
-    state = AsyncData(LibraryState(
-      likes: current.likes,
-      playlists: current.playlists,
-      followedPodcasts: current.followedPodcasts,
-      savedAlbums: saved,
-    ));
+    state = AsyncData(
+      LibraryState(
+        likes: current.likes,
+        playlists: current.playlists,
+        followedPodcasts: current.followedPodcasts,
+        savedAlbums: saved,
+      ),
+    );
   }
 
   // ── Cache SharedPreferences ───────────────────────────────────────────────
 
   Future<void> _persistLibrary(LibraryState library) async {
-    await ref.read(sharedPreferencesProvider).setString(
+    await ref
+        .read(sharedPreferencesProvider)
+        .setString(
           _libraryCacheKey,
           jsonEncode({
             'likes': library.likes.map((t) => t.toJson()).toList(),
             'playlists': library.playlists
-                .map((p) => {
-                      'id': p.id,
-                      'name': p.name,
-                      'description': p.description,
-                      'artwork_url': p.artworkUrl,
-                      'tracks': p.tracks
-                          .map((item) => {
-                                'id': item.id,
-                                'position': item.position,
-                                'track_payload': item.track.toJson(),
-                              })
-                          .toList(),
-                    })
+                .map(
+                  (p) => {
+                    'id': p.id,
+                    'name': p.name,
+                    'description': p.description,
+                    'artwork_url': p.artworkUrl,
+                    'tracks': p.tracks
+                        .map(
+                          (item) => {
+                            'id': item.id,
+                            'position': item.position,
+                            'track_payload': item.track.toJson(),
+                          },
+                        )
+                        .toList(),
+                  },
+                )
                 .toList(),
             'followed_podcasts': library.followedPodcasts
-                .map((pod) => {
-                      'podcast_key': pod.podcastKey,
-                      'title': pod.title,
-                      'publisher': pod.publisher,
-                      'description': pod.description,
-                      'artwork_url': pod.artworkUrl,
-                      'feed_url': pod.feedUrl,
-                      'external_url': pod.externalUrl,
-                      'episode_count': pod.episodeCount,
-                      'release_date': pod.releaseDate?.toIso8601String(),
-                    })
+                .map(
+                  (pod) => {
+                    'podcast_key': pod.podcastKey,
+                    'title': pod.title,
+                    'publisher': pod.publisher,
+                    'description': pod.description,
+                    'artwork_url': pod.artworkUrl,
+                    'feed_url': pod.feedUrl,
+                    'external_url': pod.externalUrl,
+                    'episode_count': pod.episodeCount,
+                    'release_date': pod.releaseDate?.toIso8601String(),
+                  },
+                )
                 .toList(),
           }),
         );
   }
 
   Future<LibraryState?> _restoreCachedLibrary() async {
-    final encoded =
-        ref.read(sharedPreferencesProvider).getString(_libraryCacheKey);
+    final encoded = ref
+        .read(sharedPreferencesProvider)
+        .getString(_libraryCacheKey);
     if (encoded == null || encoded.isEmpty) return null;
     try {
       final json = jsonDecode(encoded) as Map<String, dynamic>;
@@ -424,9 +454,10 @@ class LibraryController extends AsyncNotifier<LibraryState> {
       final playlists = (json['playlists'] as List<dynamic>? ?? [])
           .map((item) => Playlist.fromJson(item as Map<String, dynamic>))
           .toList();
-      final followedPodcasts = (json['followed_podcasts'] as List<dynamic>? ?? [])
-          .map((item) => Podcast.fromJson(item as Map<String, dynamic>))
-          .toList();
+      final followedPodcasts =
+          (json['followed_podcasts'] as List<dynamic>? ?? [])
+              .map((item) => Podcast.fromJson(item as Map<String, dynamic>))
+              .toList();
       final savedAlbums = await _loadSavedAlbums();
       return LibraryState(
         likes: likes,

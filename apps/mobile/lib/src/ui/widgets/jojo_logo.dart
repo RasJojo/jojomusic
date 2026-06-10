@@ -16,16 +16,25 @@ class JojoLogo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final radius = borderRadius ?? size * 0.34;
-    final logo = ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      child: Image.asset(
-        'assets/branding/jojomusique-logo.png',
-        width: size,
-        height: size,
-        fit: BoxFit.cover,
-      ),
-    );
+    final useCircle = borderRadius == null;
+    final logo = useCircle
+        ? ClipOval(
+            child: Image.asset(
+              'assets/branding/jojomusique-logo.png',
+              width: size,
+              height: size,
+              fit: BoxFit.cover,
+            ),
+          )
+        : ClipRRect(
+            borderRadius: BorderRadius.circular(borderRadius!),
+            child: Image.asset(
+              'assets/branding/jojomusique-logo.png',
+              width: size,
+              height: size,
+              fit: BoxFit.cover,
+            ),
+          );
 
     if (backgroundColor == null && padding == null) {
       return logo;
@@ -37,7 +46,8 @@ class JojoLogo extends StatelessWidget {
       padding: padding,
       decoration: BoxDecoration(
         color: backgroundColor,
-        borderRadius: BorderRadius.circular(radius),
+        shape: useCircle ? BoxShape.circle : BoxShape.rectangle,
+        borderRadius: useCircle ? null : BorderRadius.circular(borderRadius!),
       ),
       child: logo,
     );

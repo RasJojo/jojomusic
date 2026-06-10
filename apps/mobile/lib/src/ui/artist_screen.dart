@@ -6,286 +6,240 @@ import '../state/artist_controller.dart';
 import '../state/player_controller.dart';
 import 'album_screen.dart';
 import 'profile_screen.dart';
-import 'theme/jojo_theme.dart';
 import 'widgets/jojo_surfaces.dart';
 import 'widgets/shell_chrome.dart';
 
 class ArtistScreen extends ConsumerWidget {
   const ArtistScreen({
-    required this.artist,
+    required this.browseId,
+    required this.artistName,
     required this.onTrackAction,
+    this.imageUrl,
     super.key,
   });
 
-  final Artist artist;
-  final Future<void> Function(
-    BuildContext context,
-    Track track,
-    List<Track> queue,
-  )
-  onTrackAction;
+  final String browseId;
+  final String artistName;
+  final String? imageUrl;
+  final Future<void> Function(BuildContext, Track, List<Track>) onTrackAction;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final details = ref.watch(artistDetailsProvider(artist.name));
+    final details = browseId.isNotEmpty
+        ? ref.watch(ytArtistDetailProvider(browseId))
+        : ref.watch(ytArtistByNameProvider(artistName));
 
     return ShellChrome(
       topColor: const Color(0xFF123229),
       popToRootOnNavigate: true,
       onProfilePressed: () => openProfileScreen(context),
+      headerTitle: artistName,
+      showBackButton: true,
+      showProfileShortcut: false,
       child: details.when(
-        data: (data) => ListView(
-          padding: const EdgeInsets.fromLTRB(18, 16, 18, 148),
-          children: [
-            JojoPageHeader(
-              title: data.artist.name,
-              subtitle: 'Page artiste',
-              leading: JojoIconButton(
-                icon: Icons.arrow_back_rounded,
-                onPressed: () => Navigator.of(context).pop(),
+        data: (data) {
+          if (data == null) {
+            return Center(child: Text('Artiste "$artistName" introuvable.'));
+          }
+          final tracks = data.songs.map((t) => t.toTrack()).toList();
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(0, 0, 0, 148),
+            children: [
+              // ── Header artiste style Apple Music ──────────────────────────
+              _ArtistHeader(
+                name: data.name,
+                imageUrl: data.imageUrl,
+                subscribers: data.subscribers,
+                tracks: tracks,
+                onPlay: () => ref
+                    .read(playerControllerProvider)
+                    .playTrack(tracks.first, queue: tracks),
+                onMore: tracks.isEmpty
+                    ? null
+                    : () => onTrackAction(context, tracks.first, tracks),
               ),
-            ),
-            const SizedBox(height: 18),
-            JojoHeroPanel(
-              label: 'Artiste',
-              title: data.artist.name,
-              subtitle: data.artist.summary?.isNotEmpty == true
-                  ? data.artist.summary!
-                  : 'Titres populaires, sorties et artistes proches.',
-              artworkUrl: data.artist.imageUrl,
-              circularArtwork: true,
-              accentColor: const Color(0xFF183E31),
-              metadata: [
-                if ((data.artist.listeners ?? 0) > 0)
-                  '${data.artist.listeners} auditeurs',
-                '${data.topTracks.length} titres phares',
-                '${data.topAlbums.length} sorties',
-              ],
-              actions: [
-                FilledButton.icon(
-                  onPressed: data.topTracks.isEmpty
-                      ? null
-                      : () => ref
-                            .read(playerControllerProvider)
-                            .playTrack(
-                              data.topTracks.first,
-                              queue: data.topTracks,
-                            ),
-                  icon: const Icon(Icons.play_arrow_rounded),
-                  label: const Text('Lancer'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: data.topTracks.isEmpty
-                      ? null
-                      : () => onTrackAction(
-                          context,
-                          data.topTracks.first,
-                          data.topTracks,
+
+              // ── Titres populaires ─────────────────────────────────────────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 22, 18, 0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const JojoSectionHeading(title: 'Titres populaires'),
+                    const SizedBox(height: 12),
+                    if (tracks.isEmpty)
+                      const JojoStateMessage(
+                        icon: Icons.music_off_rounded,
+                        message: 'Aucun titre disponible pour cet artiste.',
+                      )
+                    else
+                      ...tracks.asMap().entries.map(
+                        (entry) => Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: JojoTrackTile(
+                            track: entry.value,
+                            onTap: () => ref
+                                .read(playerControllerProvider)
+                                .playTrack(entry.value, queue: tracks),
+                            onMore: () =>
+                                onTrackAction(context, entry.value, tracks),
+                          ),
                         ),
-                  icon: const Icon(Icons.more_horiz_rounded),
-                  label: const Text('Actions'),
+                      ),
+                  ],
+                ),
+              ),
+
+              // ── Albums ────────────────────────────────────────────────────
+              if (data.albums.isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 28, 18, 0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const JojoSectionHeading(title: 'Sorties'),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        height: 260,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: data.albums.length,
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(width: 14),
+                          itemBuilder: (context, index) {
+                            final album = data.albums[index];
+                            return JojoPosterCard(
+                              title: album.title,
+                              subtitle: album.year ?? '',
+                              artworkUrl: album.artworkUrl,
+                              width: 160,
+                              height: 148,
+                              onTap: () => Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => AlbumScreen(
+                                    ytAlbum: album,
+                                    onTrackAction: onTrackAction,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
-            ),
-            const SizedBox(height: 22),
-            _ArtistTrackSection(
-              tracks: data.topTracks,
-              onTrackAction: onTrackAction,
-            ),
-            const SizedBox(height: 18),
-            _AlbumSection(
-              albums: data.topAlbums,
-              onAlbumSelected: (album) {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) =>
-                        AlbumScreen(album: album, onTrackAction: onTrackAction),
-                  ),
-                );
-              },
-            ),
-            const SizedBox(height: 18),
-            _SimilarArtistsSection(
-              artists: data.similarArtists,
-              onSelectArtist: (artist) {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => ArtistScreen(
-                      artist: artist,
-                      onTrackAction: onTrackAction,
-                    ),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-        error: (error, stackTrace) =>
-            Center(child: Text('Erreur artiste: $error')),
+            ],
+          );
+        },
+        error: (e, _) => Center(child: Text('Erreur artiste: $e')),
         loading: () => const Center(child: CircularProgressIndicator()),
       ),
     );
   }
 }
 
-class _ArtistTrackSection extends ConsumerWidget {
-  const _ArtistTrackSection({
+class _ArtistHeader extends StatelessWidget {
+  const _ArtistHeader({
+    required this.name,
     required this.tracks,
-    required this.onTrackAction,
+    required this.onPlay,
+    this.imageUrl,
+    this.subscribers,
+    this.onMore,
   });
 
+  final String name;
+  final String? imageUrl;
+  final String? subscribers;
   final List<Track> tracks;
-  final Future<void> Function(
-    BuildContext context,
-    Track track,
-    List<Track> queue,
-  )
-  onTrackAction;
+  final VoidCallback onPlay;
+  final VoidCallback? onMore;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return JojoSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const JojoSectionHeading(
-            title: 'Titres populaires',
-            subtitle: 'Ce qui ressort le plus vite pour cet artiste.',
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        // Artwork pleine largeur en fond
+        SizedBox(
+          height: 300,
+          width: double.infinity,
+          child: imageUrl != null
+              ? Image.network(
+                  imageUrl!,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stack) =>
+                      const ColoredBox(color: Colors.black),
+                )
+              : const ColoredBox(color: Colors.black),
+        ),
+        // Dégradé bas
+        Positioned.fill(
+          child: DecoratedBox(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Colors.transparent, Color(0xFF091617)],
+                stops: [0.4, 1.0],
+              ),
+            ),
           ),
-          const SizedBox(height: 12),
-          if (tracks.isEmpty)
-            const JojoStateMessage(
-              icon: Icons.music_off_rounded,
-              message: 'Aucun titre disponible pour cet artiste.',
-            )
-          else
-            ...tracks.asMap().entries.map(
-              (entry) => Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: JojoTrackTile(
-                  track: entry.value,
-                  index: entry.key,
-                  onTap: () => ref
-                      .read(playerControllerProvider)
-                      .playTrack(entry.value, queue: tracks),
-                  onMore: () => onTrackAction(context, entry.value, tracks),
+        ),
+        // Nom + infos + boutons en bas
+        Positioned(
+          bottom: 0,
+          left: 18,
+          right: 18,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                name,
+                style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                  fontWeight: FontWeight.w900,
+                  shadows: [
+                    const Shadow(
+                      color: Colors.black54,
+                      blurRadius: 12,
+                    ),
+                  ],
                 ),
               ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _AlbumSection extends StatelessWidget {
-  const _AlbumSection({required this.albums, required this.onAlbumSelected});
-
-  final List<Album> albums;
-  final ValueChanged<Album> onAlbumSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return JojoSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const JojoSectionHeading(
-            title: 'Sorties',
-            subtitle: 'Albums, EPs et singles liés à cet artiste.',
-          ),
-          const SizedBox(height: 14),
-          if (albums.isEmpty)
-            const JojoStateMessage(
-              icon: Icons.album_outlined,
-              message: 'Aucune sortie disponible.',
-            )
-          else
-            SizedBox(
-              height: 276,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                itemCount: albums.length,
-                separatorBuilder: (context, index) => const SizedBox(width: 14),
-                itemBuilder: (context, index) {
-                  final album = albums[index];
-                  return JojoPosterCard(
-                    title: album.title,
-                    subtitle: [
-                      album.artist,
-                      if (album.releaseDate != null)
-                        '${album.releaseDate!.year}',
-                    ].join(' • '),
-                    artworkUrl: album.artworkUrl,
-                    badge: album.trackCount == null
-                        ? 'Sortie'
-                        : '${album.trackCount} titres',
-                    width: 176,
-                    height: 160,
-                    onTap: () => onAlbumSelected(album),
-                  );
-                },
+              if (subscribers != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  subscribers!,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Colors.white70,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  FilledButton.icon(
+                    onPressed: tracks.isEmpty ? null : onPlay,
+                    icon: const Icon(Icons.play_arrow_rounded),
+                    label: const Text('Lancer'),
+                  ),
+                  if (onMore != null) ...[
+                    const SizedBox(width: 10),
+                    OutlinedButton.icon(
+                      onPressed: onMore,
+                      icon: const Icon(Icons.more_horiz_rounded),
+                      label: const Text('Actions'),
+                    ),
+                  ],
+                ],
               ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SimilarArtistsSection extends StatelessWidget {
-  const _SimilarArtistsSection({
-    required this.artists,
-    required this.onSelectArtist,
-  });
-
-  final List<Artist> artists;
-  final ValueChanged<Artist> onSelectArtist;
-
-  @override
-  Widget build(BuildContext context) {
-    return JojoSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const JojoSectionHeading(
-            title: 'Artistes proches',
-            subtitle: 'Pour continuer sur la même couleur musicale.',
+              const SizedBox(height: 18),
+            ],
           ),
-          const SizedBox(height: 14),
-          if (artists.isEmpty)
-            const JojoStateMessage(
-              icon: Icons.people_outline_rounded,
-              message: 'Aucun artiste proche trouvé.',
-            )
-          else
-            SizedBox(
-              height: 238,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                itemCount: artists.length,
-                separatorBuilder: (context, index) => const SizedBox(width: 14),
-                itemBuilder: (context, index) {
-                  final artist = artists[index];
-                  return JojoPosterCard(
-                    title: artist.name,
-                    subtitle: artist.listeners == null
-                        ? 'Artiste'
-                        : '${artist.listeners} auditeurs',
-                    artworkUrl: artist.imageUrl,
-                    badge: 'Artiste',
-                    width: 164,
-                    height: 136,
-                    circularArtwork: true,
-                    backgroundColor: JojoColors.surfaceRaised,
-                    onTap: () => onSelectArtist(artist),
-                  );
-                },
-              ),
-            ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
-// Artists

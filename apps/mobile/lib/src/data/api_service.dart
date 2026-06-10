@@ -6,9 +6,9 @@ import '../models/app_models.dart';
 class ApiService {
   ApiService({required AppEnvironment environment, this.accessToken})
     : _environment = environment,
-      _dio = Dio(
+      _convexDio = Dio(
         BaseOptions(
-          baseUrl: environment.apiBaseUrl,
+          baseUrl: environment.convexSiteUrl,
           connectTimeout: const Duration(seconds: 15),
           receiveTimeout: const Duration(seconds: 30),
           headers: accessToken == null
@@ -19,7 +19,7 @@ class ApiService {
 
   final AppEnvironment _environment;
   final String? accessToken;
-  final Dio _dio;
+  final Dio _convexDio;
   static final Map<String, _SearchCacheEntry> _searchCache = {};
   static final Map<String, Future<SearchResult>> _searchInFlight = {};
   static const Duration _searchCacheTtl = Duration(minutes: 6);
@@ -31,7 +31,7 @@ class ApiService {
     try {
       final response = await Dio(
         BaseOptions(
-          baseUrl: _environment.apiBaseUrl,
+          baseUrl: _environment.convexSiteUrl,
           connectTimeout: const Duration(seconds: 2),
           receiveTimeout: const Duration(seconds: 2),
         ),
@@ -47,8 +47,8 @@ class ApiService {
     required String email,
     required String password,
   }) async {
-    final response = await _dio.post<Map<String, dynamic>>(
-      '/api/v1/auth/register',
+    final response = await _convexDio.post<Map<String, dynamic>>(
+      '/auth/register',
       data: {'name': name, 'email': email, 'password': password},
     );
     return AuthSession.fromJson(response.data!);
@@ -58,45 +58,45 @@ class ApiService {
     required String email,
     required String password,
   }) async {
-    final response = await _dio.post<Map<String, dynamic>>(
-      '/api/v1/auth/login',
+    final response = await _convexDio.post<Map<String, dynamic>>(
+      '/auth/login',
       data: {'email': email, 'password': password},
     );
     return AuthSession.fromJson(response.data!);
   }
 
   Future<UserProfile> fetchCurrentUser() async {
-    final response = await _dio.get<Map<String, dynamic>>('/api/v1/auth/me');
+    final response = await _convexDio.get<Map<String, dynamic>>('/auth/me');
     return UserProfile.fromJson(response.data!);
   }
 
   Future<SpotifyIntegration> fetchSpotifyIntegration() async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/api/v1/me/integrations/spotify',
+    final response = await _convexDio.get<Map<String, dynamic>>(
+      '/me/integrations/spotify',
     );
     return SpotifyIntegration.fromJson(response.data!);
   }
 
   Future<Uri> createSpotifyConnectUrl() async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/api/v1/me/integrations/spotify/connect',
+    final response = await _convexDio.get<Map<String, dynamic>>(
+      '/me/integrations/spotify/connect',
     );
     return Uri.parse(response.data!['authorize_url'] as String);
   }
 
   Future<SpotifyIntegration> syncSpotifyIntegration() async {
-    final response = await _dio.post<Map<String, dynamic>>(
-      '/api/v1/me/integrations/spotify/sync',
+    final response = await _convexDio.post<Map<String, dynamic>>(
+      '/me/integrations/spotify/sync',
     );
     return SpotifyIntegration.fromJson(response.data!);
   }
 
   Future<void> disconnectSpotifyIntegration() async {
-    await _dio.delete('/api/v1/me/integrations/spotify');
+    await _convexDio.delete('/me/integrations/spotify');
   }
 
   Future<HomeData> fetchHome() async {
-    final response = await _dio.get<Map<String, dynamic>>('/api/v1/me/home');
+    final response = await _convexDio.get<Map<String, dynamic>>('/me/home');
     return HomeData.fromJson(response.data!);
   }
 
@@ -114,8 +114,8 @@ class ApiService {
     }
 
     final future = (() async {
-      final response = await _dio.get<Map<String, dynamic>>(
-        '/api/v1/search',
+      final response = await _convexDio.get<Map<String, dynamic>>(
+        '/search',
         queryParameters: {'query': query, 'limit': limit},
       );
       final result = SearchResult.fromJson(response.data!);
@@ -134,16 +134,16 @@ class ApiService {
   }
 
   Future<ArtistDetails> fetchArtistDetails(String name) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/api/v1/artists/details',
+    final response = await _convexDio.get<Map<String, dynamic>>(
+      '/artists/details',
       queryParameters: {'name': name},
     );
     return ArtistDetails.fromJson(response.data!);
   }
 
   Future<AlbumDetails> fetchAlbumDetails(Album album) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/api/v1/albums/details',
+    final response = await _convexDio.get<Map<String, dynamic>>(
+      '/albums/details',
       queryParameters: {
         'artist': album.artist,
         'title': album.title,
@@ -154,22 +154,22 @@ class ApiService {
   }
 
   Future<List<BrowseCategory>> fetchBrowseCategories() async {
-    final response = await _dio.get<List<dynamic>>('/api/v1/browse/categories');
+    final response = await _convexDio.get<List<dynamic>>('/browse/categories');
     return response.data!
         .map((item) => BrowseCategory.fromJson(item as Map<String, dynamic>))
         .toList();
   }
 
   Future<BrowseCategoryResult> fetchBrowseCategory(String categoryId) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/api/v1/browse/categories/$categoryId',
+    final response = await _convexDio.get<Map<String, dynamic>>(
+      '/browse/categories/$categoryId',
     );
     return BrowseCategoryResult.fromJson(response.data!);
   }
 
   Future<List<Podcast>> searchPodcasts(String query, {int limit = 12}) async {
-    final response = await _dio.get<List<dynamic>>(
-      '/api/v1/podcasts/search',
+    final response = await _convexDio.get<List<dynamic>>(
+      '/podcasts/search',
       queryParameters: {'query': query, 'limit': limit},
     );
     return response.data!
@@ -178,30 +178,30 @@ class ApiService {
   }
 
   Future<PodcastDetails> fetchPodcastDetails(String podcastKey) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/api/v1/podcasts/$podcastKey',
+    final response = await _convexDio.get<Map<String, dynamic>>(
+      '/podcasts/$podcastKey',
     );
     return PodcastDetails.fromJson(response.data!);
   }
 
   Future<List<Podcast>> fetchFollowedPodcasts() async {
-    final response = await _dio.get<List<dynamic>>('/api/v1/me/podcasts');
+    final response = await _convexDio.get<List<dynamic>>('/me/podcasts');
     return response.data!
         .map((item) => Podcast.fromJson(item as Map<String, dynamic>))
         .toList();
   }
 
   Future<void> followPodcast(Podcast podcast) async {
-    await _dio.post('/api/v1/me/podcasts', data: {'podcast': podcast.toJson()});
+    await _convexDio.post('/me/podcasts', data: {'podcast': podcast.toJson()});
   }
 
   Future<void> unfollowPodcast(String podcastKey) async {
-    await _dio.delete('/api/v1/me/podcasts/$podcastKey');
+    await _convexDio.delete('/me/podcasts/$podcastKey');
   }
 
   Future<ResolvedStream> resolveTrack(Track track) async {
-    final response = await _dio.post<Map<String, dynamic>>(
-      '/api/v1/tracks/resolve',
+    final response = await _convexDio.post<Map<String, dynamic>>(
+      '/tracks/resolve',
       data: {'track': track.toJson()},
     );
     return ResolvedStream.fromJson(response.data!);
@@ -212,8 +212,8 @@ class ApiService {
     int limit = 12,
     List<String> excludeTrackKeys = const [],
   }) async {
-    final response = await _dio.post<List<dynamic>>(
-      '/api/v1/tracks/similar',
+    final response = await _convexDio.post<List<dynamic>>(
+      '/tracks/similar',
       data: {
         'track': track.toJson(),
         'limit': limit,
@@ -226,18 +226,18 @@ class ApiService {
   }
 
   Future<List<Track>> fetchLikes() async {
-    final response = await _dio.get<List<dynamic>>('/api/v1/me/likes');
+    final response = await _convexDio.get<List<dynamic>>('/me/likes');
     return response.data!
         .map((item) => Track.fromJson(item as Map<String, dynamic>))
         .toList();
   }
 
   Future<void> likeTrack(Track track) async {
-    await _dio.post('/api/v1/me/likes', data: track.toJson());
+    await _convexDio.post('/me/likes', data: track.toJson());
   }
 
   Future<void> unlikeTrack(String trackKey) async {
-    await _dio.delete('/api/v1/me/likes/$trackKey');
+    await _convexDio.delete('/me/likes/$trackKey');
   }
 
   Future<void> reportPlayback({
@@ -246,8 +246,8 @@ class ApiService {
     int listenedMs = 0,
     double completionRatio = 0,
   }) async {
-    await _dio.post(
-      '/api/v1/me/history',
+    await _convexDio.post(
+      '/me/history',
       data: {
         'event_type': eventType,
         'listened_ms': listenedMs,
@@ -258,7 +258,7 @@ class ApiService {
   }
 
   Future<List<Playlist>> fetchPlaylists() async {
-    final response = await _dio.get<List<dynamic>>('/api/v1/playlists');
+    final response = await _convexDio.get<List<dynamic>>('/playlists');
     return response.data!
         .map((item) => Playlist.fromJson(item as Map<String, dynamic>))
         .toList();
@@ -269,8 +269,8 @@ class ApiService {
     String description = '',
     String? artworkUrl,
   }) async {
-    final response = await _dio.post<Map<String, dynamic>>(
-      '/api/v1/playlists',
+    final response = await _convexDio.post<Map<String, dynamic>>(
+      '/playlists',
       data: {
         'name': name,
         'description': description,
@@ -286,8 +286,8 @@ class ApiService {
     String? description,
     String? artworkUrl,
   }) async {
-    final response = await _dio.patch<Map<String, dynamic>>(
-      '/api/v1/playlists/$playlistId',
+    final response = await _convexDio.patch<Map<String, dynamic>>(
+      '/playlists/$playlistId',
       data: {
         'name': name,
         'description': description,
@@ -301,8 +301,8 @@ class ApiService {
     required String playlistId,
     required Track track,
   }) async {
-    final response = await _dio.post<Map<String, dynamic>>(
-      '/api/v1/playlists/$playlistId/tracks',
+    final response = await _convexDio.post<Map<String, dynamic>>(
+      '/playlists/$playlistId/tracks',
       data: {'track': track.toJson()},
     );
     return Playlist.fromJson(response.data!);
@@ -312,19 +312,19 @@ class ApiService {
     required String playlistId,
     required String trackKey,
   }) async {
-    final response = await _dio.delete<Map<String, dynamic>>(
-      '/api/v1/playlists/$playlistId/tracks/$trackKey',
+    final response = await _convexDio.delete<Map<String, dynamic>>(
+      '/playlists/$playlistId/tracks/$trackKey',
     );
     return Playlist.fromJson(response.data!);
   }
 
   Future<void> deletePlaylist(String playlistId) async {
-    await _dio.delete('/api/v1/playlists/$playlistId');
+    await _convexDio.delete('/playlists/$playlistId');
   }
 
   Future<LyricsData?> fetchLyrics(Track track) async {
-    final response = await _dio.get<Map<String, dynamic>?>(
-      '/api/v1/lyrics',
+    final response = await _convexDio.get<Map<String, dynamic>?>(
+      '/lyrics',
       queryParameters: {'artist': track.artist, 'title': track.title},
     );
     final data = response.data;
@@ -336,8 +336,8 @@ class ApiService {
 
   Future<String?> fetchTrackArtwork(String artist, String title) async {
     try {
-      final response = await _dio.get<Map<String, dynamic>>(
-        '/api/v1/tracks/artwork',
+      final response = await _convexDio.get<Map<String, dynamic>>(
+        '/tracks/artwork',
         queryParameters: {'artist': artist, 'title': title},
       );
       return response.data?['artwork_url'] as String?;
@@ -353,5 +353,6 @@ class _SearchCacheEntry {
   final SearchResult result;
   final DateTime expiresAt;
 }
+
 // API
 // YT fallback

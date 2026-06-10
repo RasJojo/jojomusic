@@ -7,6 +7,7 @@ class MediaArtwork extends StatelessWidget {
   const MediaArtwork({
     super.key,
     this.url,
+    this.fallbackUrl,
     this.size = 56,
     this.borderRadius = 12,
     this.icon = Icons.music_note,
@@ -15,6 +16,7 @@ class MediaArtwork extends StatelessWidget {
   });
 
   final String? url;
+  final String? fallbackUrl;
   final double size;
   final double borderRadius;
   final IconData icon;
@@ -24,7 +26,78 @@ class MediaArtwork extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final radius = isCircular ? size / 2 : borderRadius;
-    final placeholder = Container(
+    final placeholder = _Placeholder(
+      size: size,
+      radius: radius,
+      backgroundColor: backgroundColor,
+      icon: icon,
+    );
+
+    final effectiveUrl = (url != null && url!.isNotEmpty) ? url : fallbackUrl;
+
+    if (effectiveUrl == null || effectiveUrl.isEmpty) {
+      return placeholder;
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: CachedNetworkImage(
+        imageUrl: effectiveUrl,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        placeholder: (context, value) => Stack(
+          fit: StackFit.expand,
+          children: [
+            placeholder,
+            Center(
+              child: SizedBox(
+                width: size * 0.24,
+                height: size * 0.24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white.withValues(alpha: 0.72),
+                ),
+              ),
+            ),
+          ],
+        ),
+        fadeInDuration: const Duration(milliseconds: 180),
+        errorWidget: (context, error, stackTrace) {
+          // Primary URL failed — try the YouTube thumbnail fallback
+          final fb = fallbackUrl;
+          if (fb != null && fb.isNotEmpty && fb != effectiveUrl) {
+            return CachedNetworkImage(
+              imageUrl: fb,
+              width: size,
+              height: size,
+              fit: BoxFit.cover,
+              errorWidget: (context, error, stack) => placeholder,
+            );
+          }
+          return placeholder;
+        },
+      ),
+    );
+  }
+}
+
+class _Placeholder extends StatelessWidget {
+  const _Placeholder({
+    required this.size,
+    required this.radius,
+    required this.backgroundColor,
+    required this.icon,
+  });
+
+  final double size;
+  final double radius;
+  final Color backgroundColor;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
@@ -56,38 +129,6 @@ class MediaArtwork extends StatelessWidget {
           ),
           Icon(icon, color: JojoColors.text),
         ],
-      ),
-    );
-
-    if (url == null || url!.isEmpty) {
-      return placeholder;
-    }
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      child: CachedNetworkImage(
-        imageUrl: url!,
-        width: size,
-        height: size,
-        fit: BoxFit.cover,
-        placeholder: (context, value) => Stack(
-          fit: StackFit.expand,
-          children: [
-            placeholder,
-            Center(
-              child: SizedBox(
-                width: size * 0.24,
-                height: size * 0.24,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white.withValues(alpha: 0.72),
-                ),
-              ),
-            ),
-          ],
-        ),
-        fadeInDuration: const Duration(milliseconds: 180),
-        errorWidget: (context, error, stackTrace) => placeholder,
       ),
     );
   }

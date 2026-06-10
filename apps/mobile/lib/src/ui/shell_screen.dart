@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/ytmusic/ytmusic_models.dart';
 import '../models/app_models.dart';
 import '../state/downloads_controller.dart';
 import '../state/home_controller.dart';
@@ -49,6 +50,13 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
   @override
   Widget build(BuildContext context) {
     final selectedIndex = ref.watch(shellTabIndexProvider).clamp(0, 2);
+    final session = ref.watch(sessionControllerProvider).asData?.value;
+    final firstName =
+        session?.user.name
+            .split(' ')
+            .firstWhere((v) => v.trim().isNotEmpty, orElse: () => 'toi') ??
+        'toi';
+    final headerTitles = ['Bonjour $firstName', 'Recherche', 'Bibliothèque'];
     final pages = [
       _HomeTab(
         active: selectedIndex == 0,
@@ -56,6 +64,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
         onGeneratedPlaylistSelected: _openGeneratedPlaylist,
         onBrowseCategorySelected: _openBrowseCategory,
         onPodcastSelected: _openPodcast,
+        onYtArtistSelected: _openYtArtist,
+        onYtAlbumSelected: _openYtAlbum,
       ),
       _SearchTab(
         active: selectedIndex == 1,
@@ -68,7 +78,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
         onQueryChanged: _scheduleSearch,
         onAlbumSelected: _openAlbum,
         onArtistSelected: _openArtist,
-        onBrowseCategorySelected: _openBrowseCategory,
         onPlaylistSelected: _openPlaylist,
         onPodcastSelected: _openPodcast,
         onTrackAction: _showTrackActions,
@@ -78,6 +87,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
 
     return ShellChrome(
       onProfilePressed: _openProfile,
+      headerTitle: headerTitles[selectedIndex],
       child: IndexedStack(index: selectedIndex, children: pages),
     );
   }
@@ -150,20 +160,46 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
     _searchDebounce = Timer(const Duration(milliseconds: 180), _runSearch);
   }
 
-  void _openArtist(Artist artist) {
+  void _openYtArtist(YtArtist artist) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ArtistScreen(
+          browseId: artist.browseId,
+          artistName: artist.name,
+          imageUrl: artist.imageUrl,
+          onTrackAction: _showTrackActions,
+        ),
+      ),
+    );
+  }
+
+  void _openYtAlbum(YtAlbum album) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) =>
-            ArtistScreen(artist: artist, onTrackAction: _showTrackActions),
+            AlbumScreen(ytAlbum: album, onTrackAction: _showTrackActions),
+      ),
+    );
+  }
+
+  void _openArtist(Artist artist) {
+    _openYtArtist(
+      YtArtist(
+        browseId: artist.externalId ?? '',
+        name: artist.name,
+        imageUrl: artist.imageUrl,
       ),
     );
   }
 
   void _openAlbum(Album album) {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) =>
-            AlbumScreen(album: album, onTrackAction: _showTrackActions),
+    _openYtAlbum(
+      YtAlbum(
+        browseId: album.externalId ?? '',
+        title: album.title,
+        artist: album.artist,
+        artworkUrl: album.artworkUrl,
+        year: album.releaseDate != null ? '${album.releaseDate!.year}' : null,
       ),
     );
   }
@@ -254,9 +290,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
               ListTile(
                 leading: const Icon(Icons.playlist_add_rounded),
                 title: const Text('Ajouter à une playlist'),
-                subtitle: const Text(
-                  'Choisis une ou plusieurs playlists.',
-                ),
+                subtitle: const Text('Choisis une ou plusieurs playlists.'),
                 onTap: () async {
                   Navigator.of(sheetContext).pop();
                   await showTrackPlaylistPickerSheet(
@@ -282,6 +316,8 @@ class _HomeTab extends ConsumerWidget {
     required this.onGeneratedPlaylistSelected,
     required this.onBrowseCategorySelected,
     required this.onPodcastSelected,
+    required this.onYtArtistSelected,
+    required this.onYtAlbumSelected,
   });
 
   final bool active;
@@ -294,6 +330,8 @@ class _HomeTab extends ConsumerWidget {
   final ValueChanged<GeneratedPlaylist> onGeneratedPlaylistSelected;
   final ValueChanged<BrowseCategory> onBrowseCategorySelected;
   final ValueChanged<Podcast> onPodcastSelected;
+  final ValueChanged<YtArtist> onYtArtistSelected;
+  final ValueChanged<YtAlbum> onYtAlbumSelected;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -301,27 +339,21 @@ class _HomeTab extends ConsumerWidget {
       return const SizedBox.shrink();
     }
     final home = ref.watch(homeControllerProvider);
-    final session = ref.watch(sessionControllerProvider).asData?.value;
+    final ytFeed = ref.watch(ytHomeFeedProvider);
 
     return home.when(
       data: (data) {
-        final firstName =
-            session?.user.name
-                .split(' ')
-                .firstWhere(
-                  (value) => value.trim().isNotEmpty,
-                  orElse: () => 'toi',
-                ) ??
-            'toi';
-        final featured = data.generatedPlaylists.isNotEmpty
-            ? data.generatedPlaylists.first
+        final nonEmptyPlaylists = data.generatedPlaylists
+            .where((p) => p.tracks.isNotEmpty)
+            .toList();
+        final featured = nonEmptyPlaylists.isNotEmpty
+            ? nonEmptyPlaylists.first
             : null;
         final spotlightCollections = <GeneratedPlaylist>[
           if (data.recommendations.isNotEmpty)
             GeneratedPlaylist(
               playlistKey: 'recommendations-collection',
               title: 'À découvrir',
-              subtitle: 'Une collection rapide de titres proposés pour toi',
               artworkUrl: data.recommendations.first.displayArtworkUrl,
               tracks: data.recommendations,
             ),
@@ -329,66 +361,49 @@ class _HomeTab extends ConsumerWidget {
             GeneratedPlaylist(
               playlistKey: 'recently-played-collection',
               title: 'Récemment écouté',
-              subtitle: 'Retrouve vite ce que tu avais lancé récemment',
               artworkUrl: data.recentlyPlayed.first.displayArtworkUrl,
               tracks: data.recentlyPlayed,
             ),
         ];
+        final ytFeedData = ytFeed.asData?.value;
 
         return RefreshIndicator(
-          onRefresh: ref.read(homeControllerProvider.notifier).refresh,
+          onRefresh: () async {
+            await ref.read(homeControllerProvider.notifier).refresh();
+            await ref.read(ytHomeFeedProvider.notifier).refresh();
+          },
           child: ListView(
-            padding: const EdgeInsets.fromLTRB(18, 28, 18, 160),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 140),
             children: [
-              JojoPageHeader(
-                title: 'Bonjour $firstName',
-                subtitle:
-                    'Mixes personnalisés, catégories, podcasts et titres à relancer dans un home plus éditorial.',
-              ),
-              const SizedBox(height: 22),
+              if (ytFeedData != null && !ytFeedData.isEmpty) ...[
+                for (final section in ytFeedData.sections) ...[
+                  _YtHomeSectionWidget(
+                    section: section,
+                    onTrackTap: (track) => ref
+                        .read(playerControllerProvider)
+                        .playTrack(track, queue: [track]),
+                    onArtistTap: onYtArtistSelected,
+                    onAlbumTap: onYtAlbumSelected,
+                  ),
+                  const SizedBox(height: 16),
+                ],
+              ],
               if (featured != null) ...[
-                JojoHeroPanel(
-                  label: 'Sélection du jour',
-                  title: featured.title,
-                  subtitle: featured.subtitle,
-                  artworkUrl: featured.displayArtworkUrl,
-                  accentColor: const Color(0xFF13382F),
-                  metadata: [
-                    '${featured.tracks.length} titres',
-                    if (data.recommendations.isNotEmpty)
-                      '${data.recommendations.length} recommandations',
-                  ],
-                  actions: [
-                    FilledButton.icon(
-                      onPressed: featured.tracks.isEmpty
-                          ? null
-                          : () => ref
-                                .read(playerControllerProvider)
-                                .playTrack(
-                                  featured.tracks.first,
-                                  queue: featured.tracks,
-                                ),
-                      icon: const Icon(Icons.play_arrow_rounded),
-                      label: const Text('Lancer'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: () => onGeneratedPlaylistSelected(featured),
-                      icon: const Icon(Icons.queue_music_rounded),
-                      label: const Text('Voir la sélection'),
-                    ),
-                  ],
+                _FeaturedRow(
+                  featured: featured,
+                  onPlay: () => ref
+                      .read(playerControllerProvider)
+                      .playTrack(featured.tracks.first, queue: featured.tracks)
+                      .catchError((_) {}),
+                  onOpen: () => onGeneratedPlaylistSelected(featured),
                 ),
-                const SizedBox(height: 26),
+                const SizedBox(height: 18),
               ],
               if (spotlightCollections.isNotEmpty) ...[
-                const JojoSectionHeading(
-                  title: 'Pour reprendre',
-                  subtitle:
-                      'Des collections rapides au lieu de listes de titres.',
-                ),
+                const JojoSectionHeading(title: 'Pour reprendre'),
                 const SizedBox(height: 14),
                 SizedBox(
-                  height: 290,
+                  height: 228,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
                     itemCount: spotlightCollections.length,
@@ -398,70 +413,47 @@ class _HomeTab extends ConsumerWidget {
                       final collection = spotlightCollections[index];
                       return JojoPosterCard(
                         title: collection.title,
-                        subtitle: collection.subtitle,
                         artworkUrl: collection.displayArtworkUrl,
                         badge: index == 0 ? 'Pour toi' : 'Reprendre',
-                        width: 210,
-                        height: 184,
+                        width: 148,
+                        height: 136,
                         onTap: () => onGeneratedPlaylistSelected(collection),
                       );
                     },
                   ),
                 ),
-                const SizedBox(height: 26),
+                const SizedBox(height: 18),
               ],
-              if (data.generatedPlaylists.isNotEmpty) ...[
-                const JojoSectionHeading(
-                  title: 'Faits pour toi',
-                  subtitle:
-                      'Daily Mix, découvertes, radios et sélections automatiques.',
-                ),
+              if (nonEmptyPlaylists.isNotEmpty) ...[
+                const JojoSectionHeading(title: 'Faits pour toi'),
                 const SizedBox(height: 14),
                 SizedBox(
-                  height: 290,
+                  height: 228,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
-                    itemCount: data.generatedPlaylists.length,
+                    itemCount: nonEmptyPlaylists.length,
                     separatorBuilder: (context, index) =>
                         const SizedBox(width: 14),
                     itemBuilder: (context, index) {
-                      final playlist = data.generatedPlaylists[index];
+                      final playlist = nonEmptyPlaylists[index];
                       return JojoPosterCard(
                         title: playlist.title,
-                        subtitle: playlist.subtitle,
                         artworkUrl: playlist.displayArtworkUrl,
                         badge: 'Pour toi',
-                        width: 190,
-                        height: 176,
+                        width: 148,
+                        height: 136,
                         onTap: () => onGeneratedPlaylistSelected(playlist),
                       );
                     },
                   ),
                 ),
-                const SizedBox(height: 26),
-              ],
-              if (data.browseCategories.isNotEmpty) ...[
-                const JojoSectionHeading(
-                  title: 'Explorer tout',
-                  subtitle:
-                      'Nouveautés, genres, moods, training, love et podcasts.',
-                ),
-                const SizedBox(height: 14),
-                _BrowseCategoryGrid(
-                  categories: data.browseCategories,
-                  onCategorySelected: onBrowseCategorySelected,
-                ),
-                const SizedBox(height: 26),
+                const SizedBox(height: 18),
               ],
               if (data.featuredPodcasts.isNotEmpty) ...[
-                const JojoSectionHeading(
-                  title: 'Podcasts à suivre',
-                  subtitle:
-                      'Sélection éditoriale musique, société, humour et longs formats.',
-                ),
+                const JojoSectionHeading(title: 'Podcasts à suivre'),
                 const SizedBox(height: 14),
                 SizedBox(
-                  height: 282,
+                  height: 228,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
                     itemCount: data.featuredPodcasts.length,
@@ -474,15 +466,15 @@ class _HomeTab extends ConsumerWidget {
                         subtitle: podcast.publisher,
                         artworkUrl: podcast.artworkUrl,
                         badge: 'Podcast',
-                        width: 188,
-                        height: 176,
+                        width: 148,
+                        height: 136,
                         backgroundColor: const Color(0xFF15181F),
                         onTap: () => onPodcastSelected(podcast),
                       );
                     },
                   ),
                 ),
-                const SizedBox(height: 26),
+                const SizedBox(height: 18),
               ],
             ],
           ),
@@ -569,7 +561,6 @@ class _SearchTab extends ConsumerWidget {
     required this.onQueryChanged,
     required this.onAlbumSelected,
     required this.onArtistSelected,
-    required this.onBrowseCategorySelected,
     required this.onPlaylistSelected,
     required this.onPodcastSelected,
     required this.onTrackAction,
@@ -585,7 +576,6 @@ class _SearchTab extends ConsumerWidget {
   final ValueChanged<String> onQueryChanged;
   final ValueChanged<Album> onAlbumSelected;
   final ValueChanged<Artist> onArtistSelected;
-  final ValueChanged<BrowseCategory> onBrowseCategorySelected;
   final ValueChanged<Playlist> onPlaylistSelected;
   final ValueChanged<Podcast> onPodcastSelected;
   final Future<void> Function(
@@ -612,14 +602,8 @@ class _SearchTab extends ConsumerWidget {
         : trimmedQuery;
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(18, 28, 18, 160),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 160),
       children: [
-        const JojoPageHeader(
-          title: 'Recherche',
-          subtitle:
-              'Artistes d’abord, titres phares ensuite, puis albums, playlists et podcasts.',
-        ),
-        const SizedBox(height: 18),
         JojoSurfaceCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -642,15 +626,7 @@ class _SearchTab extends ConsumerWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
-              Text(
-                trimmedQuery.isEmpty
-                    ? 'Tape un nom pour sortir des thèmes et aller sur des résultats ciblés.'
-                    : isSearching
-                    ? 'Recherche de "$searchingLabel" en cours... les résultats restent visibles.'
-                    : 'Résultats filtrés pour "$trimmedQuery".',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
+              const SizedBox(height: 10),
               if (isSearching && searchingLabel.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 const ClipRRect(
@@ -664,9 +640,7 @@ class _SearchTab extends ConsumerWidget {
         const SizedBox(height: 20),
         if (searchState == null)
           _SearchDiscoveryState(
-            categories: home?.browseCategories ?? const <BrowseCategory>[],
             podcasts: home?.featuredPodcasts ?? const <Podcast>[],
-            onBrowseCategorySelected: onBrowseCategorySelected,
             onPodcastSelected: onPodcastSelected,
           )
         else
@@ -741,192 +715,69 @@ class _SearchResultsContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (result.artists.isEmpty &&
-        result.tracks.isEmpty &&
+    if (result.tracks.isEmpty &&
+        result.artists.isEmpty &&
         result.albums.isEmpty &&
         result.podcasts.isEmpty &&
         playlists.isEmpty) {
       return const JojoStateMessage(
         icon: Icons.search_off_rounded,
-        message: 'Aucun résultat exploitable pour cette recherche.',
+        message: 'Aucun résultat pour cette recherche.',
       );
     }
-
-    final rankedPodcasts = [...result.podcasts]..sort(
-      (left, right) =>
-          _podcastPriorityScore(result.query, right) -
-          _podcastPriorityScore(result.query, left),
-    );
-    final topArtist = result.artists.isNotEmpty ? result.artists.first : null;
-    final topPodcast = rankedPodcasts.isNotEmpty ? rankedPodcasts.first : null;
-    final prioritizePodcasts =
-        topPodcast != null &&
-        _podcastPriorityScore(result.query, topPodcast) >=
-            _artistPriorityScore(result.query, topArtist);
-    final strongPodcastIntent =
-        topPodcast != null &&
-        _podcastPriorityScore(result.query, topPodcast) >= 2800 &&
-        _podcastPriorityScore(result.query, topPodcast) >
-            _artistPriorityScore(result.query, topArtist);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (prioritizePodcasts) ...[
-          JojoHeroPanel(
-            label: 'Meilleur résultat',
-            title: topPodcast.title,
-            subtitle: topPodcast.description?.isNotEmpty == true
-                ? topPodcast.description!
-                : 'Podcast • ouvre la page pour voir les épisodes récents.',
-            artworkUrl: topPodcast.artworkUrl,
-            accentColor: const Color(0xFF3A1A2D),
-            metadata: [
-              topPodcast.publisher,
-              if ((topPodcast.episodeCount ?? 0) > 0)
-                '${topPodcast.episodeCount} épisodes',
-            ],
-            actions: [
-              FilledButton.icon(
-                onPressed: () => onPodcastSelected(topPodcast),
-                icon: const Icon(Icons.podcasts_rounded),
-                label: const Text('Ouvrir le podcast'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-        ] else if (topArtist != null) ...[
-          JojoHeroPanel(
-            label: 'Meilleur résultat',
-            title: topArtist.name,
-            subtitle: topArtist.summary?.isNotEmpty == true
-                ? topArtist.summary!
-                : 'Artiste • ouvre la page pour voir titres, albums et proches.',
-            artworkUrl: topArtist.imageUrl,
-            circularArtwork: true,
-            accentColor: const Color(0xFF13382F),
-            metadata: [
-              if (topArtist.listeners != null)
-                '${topArtist.listeners} auditeurs',
-            ],
-            actions: [
-              FilledButton.icon(
-                onPressed: () => onArtistSelected(topArtist),
-                icon: const Icon(Icons.person_search_rounded),
-                label: const Text('Ouvrir la page artiste'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-        ],
-        if (prioritizePodcasts) ...[
-          if (rankedPodcasts.isNotEmpty)
-            _PodcastResultsSection(
-              podcasts: rankedPodcasts,
-              onPodcastSelected: onPodcastSelected,
-            ),
-          if (!strongPodcastIntent &&
-              rankedPodcasts.isNotEmpty &&
-              result.artists.isNotEmpty)
-            const SizedBox(height: 18),
-          if (!strongPodcastIntent && result.artists.isNotEmpty)
-            _ArtistResultsSection(
-              artists: result.artists,
-              onArtistSelected: onArtistSelected,
-            ),
-        ] else ...[
-          if (result.artists.isNotEmpty)
-            _ArtistResultsSection(
-              artists: result.artists,
-              onArtistSelected: onArtistSelected,
-            ),
-          if (result.artists.isNotEmpty && result.podcasts.isNotEmpty)
-            const SizedBox(height: 18),
-          if (rankedPodcasts.isNotEmpty)
-            _PodcastResultsSection(
-              podcasts: rankedPodcasts,
-              onPodcastSelected: onPodcastSelected,
-            ),
-        ],
-        if (!strongPodcastIntent &&
-            (result.artists.isNotEmpty || rankedPodcasts.isNotEmpty) &&
-            result.tracks.isNotEmpty)
-          const SizedBox(height: 18),
-        if (!strongPodcastIntent && result.tracks.isNotEmpty)
+        if (result.tracks.isNotEmpty) ...[
           _TrackSection(
-            title: 'Titres phares',
-            subtitle:
-                'Les morceaux les plus exploitables pour lancer la lecture.',
+            title: 'Titres',
+            subtitle: 'Résultats pour cette recherche.',
             tracks: result.tracks,
             onTrackAction: onTrackAction,
           ),
-        if (!strongPodcastIntent &&
-            result.tracks.isNotEmpty &&
-            result.albums.isNotEmpty)
           const SizedBox(height: 18),
-        if (!strongPodcastIntent && result.albums.isNotEmpty)
+        ],
+        if (result.artists.isNotEmpty) ...[
+          _ArtistResultsSection(
+            artists: result.artists,
+            onArtistSelected: onArtistSelected,
+          ),
+          const SizedBox(height: 18),
+        ],
+        if (result.albums.isNotEmpty) ...[
           _AlbumResultsSection(
             albums: result.albums,
             onAlbumSelected: onAlbumSelected,
           ),
-        if (!strongPodcastIntent &&
-            result.albums.isNotEmpty &&
-            playlists.isNotEmpty)
           const SizedBox(height: 18),
-        if (!strongPodcastIntent && playlists.isNotEmpty)
+        ],
+        if (result.podcasts.isNotEmpty) ...[
+          _PodcastResultsSection(
+            podcasts: result.podcasts,
+            onPodcastSelected: onPodcastSelected,
+          ),
+          const SizedBox(height: 18),
+        ],
+        if (playlists.isNotEmpty) ...[
           _PlaylistResultsSection(
             playlists: playlists,
             onPlaylistSelected: onPlaylistSelected,
           ),
+          const SizedBox(height: 18),
+        ],
       ],
     );
-  }
-
-  int _artistPriorityScore(String query, Artist? artist) {
-    if (artist == null) {
-      return 0;
-    }
-    return _searchPriorityScore(query, artist.name);
-  }
-
-  int _podcastPriorityScore(String query, Podcast podcast) {
-    final titleScore = _searchPriorityScore(query, podcast.title);
-    final publisherScore = _searchPriorityScore(query, podcast.publisher);
-    return titleScore + (publisherScore ~/ 3);
-  }
-
-  int _searchPriorityScore(String query, String value) {
-    final normalizedQuery = _normalizeSearchValue(query);
-    final normalizedValue = _normalizeSearchValue(value);
-    final compactQuery = normalizedQuery.replaceAll(' ', '');
-    final compactValue = normalizedValue.replaceAll(' ', '');
-
-    if (normalizedValue == normalizedQuery || compactValue == compactQuery) {
-      return 4000;
-    }
-    if (normalizedValue.startsWith(normalizedQuery) ||
-        compactValue.startsWith(compactQuery)) {
-      return 2800;
-    }
-    if (normalizedValue.contains(normalizedQuery) ||
-        compactValue.contains(compactQuery)) {
-      return 2200;
-    }
-    return 0;
   }
 }
 
 class _SearchDiscoveryState extends StatelessWidget {
   const _SearchDiscoveryState({
-    required this.categories,
     required this.podcasts,
-    required this.onBrowseCategorySelected,
     required this.onPodcastSelected,
   });
 
-  final List<BrowseCategory> categories;
   final List<Podcast> podcasts;
-  final ValueChanged<BrowseCategory> onBrowseCategorySelected;
   final ValueChanged<Podcast> onPodcastSelected;
 
   @override
@@ -937,30 +788,15 @@ class _SearchDiscoveryState extends StatelessWidget {
         const JojoHeroPanel(
           label: 'À découvrir',
           title: 'Lance une recherche ciblée',
-          subtitle:
-              'La recherche met en avant les artistes exacts avant les titres et réduit le bruit hors sujet.',
           accentColor: Color(0xFF232A42),
-          metadata: ['Artistes', 'Titres phares', 'Albums', 'Playlists'],
+          metadata: ['Artistes', 'Titres', 'Albums', 'Playlists'],
         ),
-        if (categories.isNotEmpty) ...[
-          const SizedBox(height: 22),
-          const JojoSectionHeading(
-            title: 'Par thèmes',
-            subtitle:
-                'Des portes d’entrée rapides quand tu ne sais pas quoi lancer.',
-          ),
-          const SizedBox(height: 14),
-          _BrowseCategoryGrid(
-            categories: categories,
-            onCategorySelected: onBrowseCategorySelected,
-          ),
-        ],
         if (podcasts.isNotEmpty) ...[
           const SizedBox(height: 24),
           const JojoSectionHeading(
             title: 'Podcasts à suivre',
             subtitle:
-                'Tu peux aussi partir d’un show et lire ses derniers épisodes.',
+                'Tu peux aussi partir d\'un show et lire ses derniers épisodes.',
           ),
           const SizedBox(height: 14),
           SizedBox(
@@ -1001,40 +837,34 @@ class _ArtistResultsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return JojoSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const JojoSectionHeading(
-            title: 'Artistes',
-            subtitle: 'Matches prioritaires et variantes proches.',
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const JojoSectionHeading(title: 'Artistes'),
+        const SizedBox(height: 14),
+        SizedBox(
+          height: 220,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: artists.length,
+            separatorBuilder: (context, index) => const SizedBox(width: 14),
+            itemBuilder: (context, index) {
+              final artist = artists[index];
+              return JojoPosterCard(
+                title: artist.name,
+                subtitle: artist.listeners != null
+                    ? '${_formatCount(artist.listeners!)} auditeurs'
+                    : null,
+                artworkUrl: artist.imageUrl,
+                width: 148,
+                height: 120,
+                circularArtwork: true,
+                onTap: () => onArtistSelected(artist),
+              );
+            },
           ),
-          const SizedBox(height: 14),
-          SizedBox(
-            height: 238,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: artists.length,
-              separatorBuilder: (context, index) => const SizedBox(width: 14),
-              itemBuilder: (context, index) {
-                final artist = artists[index];
-                return JojoPosterCard(
-                  title: artist.name,
-                  subtitle: artist.listeners == null
-                      ? 'Artiste'
-                      : '${artist.listeners} auditeurs',
-                  artworkUrl: artist.imageUrl,
-                  badge: 'Artiste',
-                  width: 164,
-                  height: 136,
-                  circularArtwork: true,
-                  onTap: () => onArtistSelected(artist),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -1050,78 +880,34 @@ class _AlbumResultsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return JojoSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const JojoSectionHeading(
-            title: 'Albums',
-            subtitle: 'Sorties, EPs et singles liés à la recherche.',
-          ),
-          const SizedBox(height: 14),
-          SizedBox(
-            height: 272,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: albums.length,
-              separatorBuilder: (context, index) => const SizedBox(width: 14),
-              itemBuilder: (context, index) {
-                final album = albums[index];
-                final meta = [
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const JojoSectionHeading(title: 'Albums'),
+        const SizedBox(height: 14),
+        SizedBox(
+          height: 256,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: albums.length,
+            separatorBuilder: (context, index) => const SizedBox(width: 14),
+            itemBuilder: (context, index) {
+              final album = albums[index];
+              return JojoPosterCard(
+                title: album.title,
+                subtitle: [
                   album.artist,
                   if (album.releaseDate != null) '${album.releaseDate!.year}',
-                ].join(' • ');
-                return JojoPosterCard(
-                  title: album.title,
-                  subtitle: meta,
-                  artworkUrl: album.artworkUrl,
-                  badge: album.trackCount == null
-                      ? 'Album'
-                      : '${album.trackCount} titres',
-                  width: 176,
-                  height: 160,
-                  onTap: () => onAlbumSelected(album),
-                );
-              },
-            ),
+                ].join(' · '),
+                artworkUrl: album.artworkUrl,
+                width: 160,
+                height: 148,
+                onTap: () => onAlbumSelected(album),
+              );
+            },
           ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PlaylistResultsSection extends StatelessWidget {
-  const _PlaylistResultsSection({
-    required this.playlists,
-    required this.onPlaylistSelected,
-  });
-
-  final List<Playlist> playlists;
-  final ValueChanged<Playlist> onPlaylistSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return JojoSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const JojoSectionHeading(
-            title: 'Playlists',
-            subtitle: 'Playlists locales qui matchent la recherche.',
-          ),
-          const SizedBox(height: 12),
-          ...playlists.map(
-            (playlist) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _PlaylistRowCard(
-                playlist: playlist,
-                onTap: () => onPlaylistSelected(playlist),
-              ),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -1137,26 +923,51 @@ class _PodcastResultsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return JojoSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const JojoSectionHeading(
-            title: 'Podcasts',
-            subtitle: 'Shows et flux pertinents autour de la recherche.',
-          ),
-          const SizedBox(height: 12),
-          ...podcasts.map(
-            (podcast) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _PodcastRowCard(
-                podcast: podcast,
-                onTap: () => onPodcastSelected(podcast),
-              ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const JojoSectionHeading(title: 'Podcasts'),
+        const SizedBox(height: 12),
+        ...podcasts.map(
+          (podcast) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _PodcastRowCard(
+              podcast: podcast,
+              onTap: () => onPodcastSelected(podcast),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PlaylistResultsSection extends StatelessWidget {
+  const _PlaylistResultsSection({
+    required this.playlists,
+    required this.onPlaylistSelected,
+  });
+
+  final List<Playlist> playlists;
+  final ValueChanged<Playlist> onPlaylistSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const JojoSectionHeading(title: 'Playlists'),
+        const SizedBox(height: 12),
+        ...playlists.map(
+          (playlist) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _PlaylistRowCard(
+              playlist: playlist,
+              onTap: () => onPlaylistSelected(playlist),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1190,120 +1001,174 @@ class _LibraryTab extends ConsumerWidget {
           ...data.playlists,
         ].whereType<Playlist>().toList(growable: false);
         final followedPodcasts = data.followedPodcasts;
+        final savedAlbums = data.savedAlbums;
 
-        return ListView(
-          padding: const EdgeInsets.fromLTRB(18, 28, 18, 160),
+        return Stack(
           children: [
-            JojoPageHeader(
-              title: 'Bibliothèque',
-              subtitle:
-                  'Playlists, favoris et podcasts suivis dans un seul espace.',
-              trailing: FilledButton.tonalIcon(
-                onPressed: () => _showCreatePlaylistDialog(context, ref),
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('Playlist'),
-              ),
-            ),
-            const SizedBox(height: 20),
-            JojoHeroPanel(
-              label: 'Collection perso',
-              title:
-                  '${data.likes.length} favoris • ${playlistRows.length} playlists • ${followedPodcasts.length} podcasts',
-              subtitle:
-                  'Les favoris sont traités comme une playlist, et les podcasts suivis restent ici comme des sélections durables.',
-              accentColor: const Color(0xFF243742),
-              metadata: [
-                '${data.likes.length} titres aimés',
-                '${playlistRows.length} playlists',
-                '${followedPodcasts.length} podcasts suivis',
-              ],
-              actions: [
-                FilledButton.icon(
-                  onPressed: favoritesPlaylist == null
-                      ? null
-                      : () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => PlaylistScreen(
-                                playlistId: favoritesPlaylistId,
+            ListView(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 140),
+              children: [
+                // Stats compactes
+                Row(
+                  children: [
+                    _LibraryStat(
+                      icon: Icons.favorite_rounded,
+                      label: '${data.likes.length}',
+                      sub: 'favoris',
+                      onTap: favoritesPlaylist == null
+                          ? null
+                          : () => Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => PlaylistScreen(
+                                  playlistId: favoritesPlaylistId,
+                                ),
                               ),
                             ),
-                          );
-                        },
-                  icon: const Icon(Icons.favorite_rounded),
-                  label: const Text('Ouvrir Favoris'),
+                    ),
+                    const SizedBox(width: 12),
+                    _LibraryStat(
+                      icon: Icons.queue_music_rounded,
+                      label: '${playlistRows.length}',
+                      sub: 'playlists',
+                    ),
+                    if (savedAlbums.isNotEmpty) ...[
+                      const SizedBox(width: 12),
+                      _LibraryStat(
+                        icon: Icons.album_rounded,
+                        label: '${savedAlbums.length}',
+                        sub: 'albums',
+                      ),
+                    ],
+                    if (followedPodcasts.isNotEmpty) ...[
+                      const SizedBox(width: 12),
+                      _LibraryStat(
+                        icon: Icons.podcasts_rounded,
+                        label: '${followedPodcasts.length}',
+                        sub: 'podcasts',
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 28),
+                if (savedAlbums.isNotEmpty) ...[
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const JojoSectionHeading(title: 'Albums sauvegardés'),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        height: 220,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: savedAlbums.length,
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(width: 14),
+                          itemBuilder: (context, index) {
+                            final album = savedAlbums[index];
+                            return JojoPosterCard(
+                              title: album.title,
+                              subtitle: album.artist,
+                              artworkUrl: album.artworkUrl,
+                              width: 140,
+                              height: 130,
+                              onTap: () => Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => AlbumScreen(
+                                    ytAlbum: YtAlbum(
+                                      browseId:
+                                          album.externalId ?? album.albumKey,
+                                      title: album.title,
+                                      artist: album.artist,
+                                      artworkUrl: album.artworkUrl,
+                                      year: album.releaseDate != null
+                                          ? '${album.releaseDate!.year}'
+                                          : null,
+                                    ),
+                                    onTrackAction: onTrackAction,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                ],
+                if (followedPodcasts.isNotEmpty) ...[
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const JojoSectionHeading(title: 'Podcasts suivis'),
+                      const SizedBox(height: 14),
+                      ...followedPodcasts.map(
+                        (podcast) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: _PodcastRowCard(
+                            podcast: podcast,
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) =>
+                                      PodcastScreen(podcast: podcast),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                ],
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const JojoSectionHeading(title: 'Playlists'),
+                    const SizedBox(height: 14),
+                    if (playlistRows.isEmpty)
+                      const JojoStateMessage(
+                        icon: Icons.playlist_add_check_rounded,
+                        message:
+                            'Crée ta première playlist pour organiser tes titres.',
+                      )
+                    else
+                      ...playlistRows.map(
+                        (playlist) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: _PlaylistRowCard(
+                            playlist: playlist,
+                            isOfflineEnabled: downloadedPlaylistIds.contains(
+                              playlist.id,
+                            ),
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) =>
+                                      PlaylistScreen(playlistId: playlist.id),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ],
             ),
-            const SizedBox(height: 22),
-            if (followedPodcasts.isNotEmpty) ...[
-              JojoSurfaceCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const JojoSectionHeading(
-                      title: 'Podcasts suivis',
-                      subtitle:
-                          'Chaque podcast suivi vit ici comme une sélection permanente.',
-                    ),
-                    const SizedBox(height: 14),
-                    ...followedPodcasts.map(
-                      (podcast) => Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: _PodcastRowCard(
-                          podcast: podcast,
-                          onTap: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) => PodcastScreen(podcast: podcast),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  ],
+            Positioned(
+              right: 16,
+              bottom: 16,
+              child: FloatingActionButton.extended(
+                onPressed: () => _showCreatePlaylistDialog(context, ref),
+                backgroundColor: JojoColors.primary,
+                foregroundColor: Colors.black,
+                icon: const Icon(Icons.add_rounded),
+                label: const Text(
+                  'Playlist',
+                  style: TextStyle(fontWeight: FontWeight.w700),
                 ),
-              ),
-              const SizedBox(height: 18),
-            ],
-            JojoSurfaceCard(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const JojoSectionHeading(
-                    title: 'Playlists',
-                    subtitle:
-                        'Favoris inclus, plus tes playlists perso modifiables.',
-                  ),
-                  const SizedBox(height: 14),
-                  if (playlistRows.isEmpty)
-                    const JojoStateMessage(
-                      icon: Icons.playlist_add_check_rounded,
-                      message:
-                          'Crée ta première playlist pour organiser tes titres.',
-                    )
-                  else
-                    ...playlistRows.map(
-                      (playlist) => Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: _PlaylistRowCard(
-                          playlist: playlist,
-                          isOfflineEnabled: downloadedPlaylistIds.contains(
-                            playlist.id,
-                          ),
-                          onTap: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) =>
-                                    PlaylistScreen(playlistId: playlist.id),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                ],
               ),
             ),
           ],
@@ -1345,7 +1210,7 @@ class _LibraryTab extends ConsumerWidget {
                     const JojoStateMessage(
                       icon: Icons.cloud_off_rounded,
                       message:
-                          'Pas de connexion. Les playlists hors ligne apparaîtront ici dès qu’une bibliothèque locale existe.',
+                          "Pas de connexion. Les playlists hors ligne apparaîtront ici dès qu'une bibliothèque locale existe.",
                     ),
                     const SizedBox(height: 16),
                     OutlinedButton.icon(
@@ -1394,11 +1259,12 @@ class _LibraryTab extends ConsumerWidget {
                 if (name.isEmpty) {
                   return;
                 }
-                await ref
-                    .read(libraryControllerProvider.notifier)
-                    .createPlaylist(name: name);
-                if (context.mounted) {
-                  Navigator.of(context).pop();
+                try {
+                  await ref
+                      .read(libraryControllerProvider.notifier)
+                      .createPlaylist(name: name);
+                } finally {
+                  if (context.mounted) Navigator.of(context).pop();
                 }
               },
               child: const Text('Créer'),
@@ -1413,14 +1279,14 @@ class _LibraryTab extends ConsumerWidget {
 
 String _describeHomeLoadError(Object error) {
   if (error is TimeoutException) {
-    return 'Accueil trop lent à répondre. Le serveur a fini par répondre, mais l’app a abandonné trop tôt. Réessaie.';
+    return "Accueil trop lent à répondre. Le serveur a fini par répondre, mais l'app a abandonné trop tôt. Réessaie.";
   }
   if (error is DioException) {
     final statusCode = error.response?.statusCode;
     if (statusCode != null) {
       return 'Accueil indisponible pour le moment (code $statusCode). Tes playlists locales restent accessibles.';
     }
-    return 'Connexion à l’accueil impossible pour le moment. Tes playlists locales restent accessibles.';
+    return "Connexion à l'accueil impossible pour le moment. Tes playlists locales restent accessibles.";
   }
   return 'Accueil indisponible pour le moment. Tes playlists locales restent accessibles.';
 }
@@ -1497,31 +1363,29 @@ class _TrackSectionState extends ConsumerState<_TrackSection> {
 
   @override
   Widget build(BuildContext context) {
-    return JojoSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          JojoSectionHeading(title: widget.title, subtitle: widget.subtitle),
-          const SizedBox(height: 12),
-          if (widget.tracks.isEmpty)
-            const JojoStateMessage(
-              message:
-                  'Commence à écouter ou à liker des titres pour nourrir cette section.',
-            )
-          else
-            ...widget.tracks.asMap().entries.map(
-              (entry) => Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: _TrackTile(
-                  track: entry.value,
-                  queue: widget.tracks,
-                  onTrackAction: widget.onTrackAction,
-                  index: entry.key,
-                ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        JojoSectionHeading(title: widget.title),
+        const SizedBox(height: 12),
+        if (widget.tracks.isEmpty)
+          const JojoStateMessage(
+            message:
+                'Commence à écouter ou à liker des titres pour nourrir cette section.',
+          )
+        else
+          ...widget.tracks.asMap().entries.map(
+            (entry) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _TrackTile(
+                track: entry.value,
+                queue: widget.tracks,
+                onTrackAction: widget.onTrackAction,
+                index: entry.key,
               ),
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 }
@@ -1557,7 +1421,11 @@ class _TrackTile extends ConsumerWidget {
         } catch (error) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Lecture impossible: $error')),
+              SnackBar(
+                content: Text('Lecture impossible : $error'),
+                duration: const Duration(seconds: 8),
+                action: SnackBarAction(label: 'OK', onPressed: () {}),
+              ),
             );
           }
         }
@@ -1708,182 +1576,170 @@ class _PodcastRowCard extends StatelessWidget {
   }
 }
 
-class _BrowseCategoryGrid extends StatelessWidget {
-  const _BrowseCategoryGrid({
-    required this.categories,
-    required this.onCategorySelected,
+class _YtHomeSectionWidget extends ConsumerWidget {
+  const _YtHomeSectionWidget({
+    required this.section,
+    required this.onTrackTap,
+    required this.onArtistTap,
+    required this.onAlbumTap,
   });
 
-  final List<BrowseCategory> categories;
-  final ValueChanged<BrowseCategory> onCategorySelected;
+  final YtHomeSection section;
+  final ValueChanged<Track> onTrackTap;
+  final ValueChanged<YtArtist> onArtistTap;
+  final ValueChanged<YtAlbum> onAlbumTap;
 
   @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final maxWidth = constraints.maxWidth;
-        final columns = maxWidth >= 1180
-            ? 4
-            : maxWidth >= 840
-            ? 3
-            : maxWidth >= 520
-            ? 2
-            : 1;
-        const spacing = 14.0;
-        final cardWidth = columns == 1
-            ? maxWidth
-            : (maxWidth - (spacing * (columns - 1))) / columns;
-        return Wrap(
-          spacing: spacing,
-          runSpacing: spacing,
-          children: categories
-              .map(
-                (category) => SizedBox(
-                  width: cardWidth,
-                  child: _BrowseCategoryCard(
-                    category: category,
-                    onTap: () => onCategorySelected(category),
-                  ),
-                ),
-              )
-              .toList(),
-        );
-      },
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (section.items.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        JojoSectionHeading(title: section.title),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 228,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: section.items.length,
+            separatorBuilder: (context, index) => const SizedBox(width: 12),
+            itemBuilder: (context, index) {
+              final item = section.items[index];
+              final tappable = item.isTrack || item.browseId != null;
+              return JojoPosterCard(
+                title: item.title,
+                subtitle: item.subtitle,
+                artworkUrl: item.artworkUrl,
+                badge: item.isTrack ? 'Titre' : null,
+                width: 148,
+                height: 136,
+                onTap: tappable
+                    ? () {
+                        if (item.isTrack) {
+                          final track = Track(
+                            trackKey: item.videoId!,
+                            title: item.title,
+                            artist: item.subtitle ?? '',
+                            artworkUrl: item.artworkUrl,
+                            provider: 'youtube',
+                            externalId: item.videoId,
+                          );
+                          onTrackTap(track);
+                        } else {
+                          final browseId = item.browseId!;
+                          if (browseId.startsWith('UC')) {
+                            onArtistTap(
+                              YtArtist(
+                                browseId: browseId,
+                                name: item.title,
+                                imageUrl: item.artworkUrl,
+                              ),
+                            );
+                          } else {
+                            onAlbumTap(
+                              YtAlbum(
+                                browseId: browseId,
+                                title: item.title,
+                                artist: item.subtitle ?? '',
+                                artworkUrl: item.artworkUrl,
+                              ),
+                            );
+                          }
+                        }
+                      }
+                    : () {},
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }
 
-class _BrowseCategoryCard extends StatelessWidget {
-  const _BrowseCategoryCard({required this.category, required this.onTap});
+String _normalizeSearchValue(String value) {
+  return value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
+}
 
-  final BrowseCategory category;
-  final VoidCallback onTap;
+String _formatCount(int count) {
+  if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
+  if (count >= 1000) return '${(count / 1000).toStringAsFixed(0)}k';
+  return '$count';
+}
+
+// Compact featured row on home screen
+class _FeaturedRow extends StatelessWidget {
+  const _FeaturedRow({
+    required this.featured,
+    required this.onPlay,
+    required this.onOpen,
+  });
+
+  final GeneratedPlaylist featured;
+  final VoidCallback onPlay;
+  final VoidCallback onOpen;
 
   @override
   Widget build(BuildContext context) {
-    final color = _colorFromHex(category.colorHex);
-    final categoryIcon = _browseCategoryIcon(category.categoryId);
     return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(24),
+      onTap: onOpen,
+      borderRadius: BorderRadius.circular(16),
       child: Ink(
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(24),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              color.withValues(alpha: 0.98),
-              color.withValues(alpha: 0.66),
-            ],
-          ),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
-          boxShadow: [
-            BoxShadow(
-              color: color.withValues(alpha: 0.2),
-              blurRadius: 28,
-              offset: const Offset(0, 16),
-            ),
-          ],
+          borderRadius: BorderRadius.circular(16),
+          color: Colors.white.withValues(alpha: 0.07),
         ),
-        child: AspectRatio(
-          aspectRatio: 1.14,
-          child: Stack(
-            fit: StackFit.expand,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
             children: [
-              if (category.artworkUrl != null &&
-                  category.artworkUrl!.isNotEmpty)
-                Positioned.fill(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(24),
-                    child: MediaArtwork(
-                      url: category.artworkUrl,
-                      size: 420,
-                      borderRadius: 24,
-                      backgroundColor: color.withValues(alpha: 0.82),
-                      icon: categoryIcon,
-                    ),
-                  ),
-                ),
-              Positioned.fill(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(24),
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.black.withValues(alpha: 0.12),
-                        Colors.black.withValues(
-                          alpha: category.artworkUrl == null ? 0.14 : 0.3,
-                        ),
-                        Colors.black.withValues(alpha: 0.76),
-                      ],
-                    ),
-                  ),
-                ),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: featured.displayArtworkUrl != null
+                    ? Image.network(
+                        featured.displayArtworkUrl!,
+                        width: 52,
+                        height: 52,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) =>
+                            const _PlaceholderArt(size: 52),
+                      )
+                    : const _PlaceholderArt(size: 52),
               ),
-              Positioned(
-                right: -24,
-                bottom: -24,
-                child: Icon(
-                  categoryIcon,
-                  size: 132,
-                  color: Colors.white.withValues(alpha: 0.11),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(18),
+              const SizedBox(width: 14),
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.28),
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.16),
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(categoryIcon, color: Colors.white, size: 16),
-                          const SizedBox(width: 8),
-                          Text(
-                            _browseCategoryBadge(category.categoryId),
-                            style: Theme.of(context).textTheme.labelMedium
-                                ?.copyWith(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                          ),
-                        ],
+                    Text(
+                      featured.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
-                    const Spacer(),
                     Text(
-                      category.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      category.subtitle,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Colors.white.withValues(alpha: 0.86),
-                      ),
+                      '${featured.tracks.length} titres',
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(color: Colors.white54),
                     ),
                   ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                width: 40,
+                height: 40,
+                decoration: const BoxDecoration(
+                  color: JojoColors.primary,
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  onPressed: featured.tracks.isEmpty ? null : onPlay,
+                  icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                  color: Colors.black,
                 ),
               ),
             ],
@@ -1894,47 +1750,67 @@ class _BrowseCategoryCard extends StatelessWidget {
   }
 }
 
-IconData _browseCategoryIcon(String categoryId) {
-  return switch (categoryId) {
-    'new-releases' => Icons.auto_awesome_rounded,
-    'pop-hits' => Icons.flash_on_rounded,
-    'rap-hiphop' => Icons.graphic_eq_rounded,
-    'afro-vibes' => Icons.wb_sunny_rounded,
-    'mada-vibes' => Icons.travel_explore_rounded,
-    'chill-mood' => Icons.nightlight_round,
-    'workout-energy' => Icons.fitness_center_rounded,
-    'love-songs' => Icons.favorite_rounded,
-    'podcasts-editorial' => Icons.mic_rounded,
-    _ => Icons.library_music_rounded,
-  };
-}
+class _PlaceholderArt extends StatelessWidget {
+  const _PlaceholderArt({this.size = 64});
+  final double size;
 
-String _browseCategoryBadge(String categoryId) {
-  return switch (categoryId) {
-    'new-releases' => 'Nouveau',
-    'pop-hits' => 'Hits',
-    'rap-hiphop' => 'Rap',
-    'afro-vibes' => 'Afro',
-    'mada-vibes' => 'Mada',
-    'chill-mood' => 'Chill',
-    'workout-energy' => 'Énergie',
-    'love-songs' => 'Love',
-    'podcasts-editorial' => 'Podcast',
-    _ => 'Explorer',
-  };
-}
-
-String _normalizeSearchValue(String value) {
-  return value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
-}
-
-Color _colorFromHex(String value) {
-  final buffer = StringBuffer();
-  if (value.length == 7) {
-    buffer.write('ff');
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      color: const Color(0xFF0D0D0D),
+      child: const Icon(Icons.music_note_rounded, color: JojoColors.primary),
+    );
   }
-  buffer.write(value.replaceFirst('#', ''));
-  return Color(int.parse(buffer.toString(), radix: 16));
 }
-// Swipe
-// Refactor
+
+class _LibraryStat extends StatelessWidget {
+  const _LibraryStat({
+    required this.icon,
+    required this.label,
+    required this.sub,
+    this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final String sub;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+          decoration: BoxDecoration(
+            color: const Color(0x660C1718),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0x1FFFFFFF)),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 20, color: JojoColors.primary),
+              const SizedBox(width: 10),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  Text(sub, style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

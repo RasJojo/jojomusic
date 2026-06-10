@@ -49,6 +49,11 @@ export class MusicController {
     return this.musicService.podcastDetails(podcastKey);
   }
 
+  @Get('tracks/artwork')
+  trackArtwork(@Query() query: LyricsDto) {
+    return this.musicService.trackArtwork(query.artist, query.title);
+  }
+
   @Get('lyrics')
   lyrics(@Query() query: LyricsDto) {
     return this.musicService.lyrics(query.artist, query.title);

@@ -19,22 +19,22 @@ const _kParamAlbums = 'EgWKAQIYAWoKEAoQCRADEAQQBQ%3D%3D';
 
 class YtMusicClient {
   YtMusicClient()
-      : _dio = Dio(
-          BaseOptions(
-            baseUrl: _kBaseUrl,
-            connectTimeout: const Duration(seconds: 12),
-            receiveTimeout: const Duration(seconds: 20),
-            headers: {
-              'User-Agent':
-                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                  '(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-              'X-Goog-Api-Format-Version': '1',
-              'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
-              'Origin': 'https://music.youtube.com',
-              'Referer': 'https://music.youtube.com/',
-            },
-          ),
-        );
+    : _dio = Dio(
+        BaseOptions(
+          baseUrl: _kBaseUrl,
+          connectTimeout: const Duration(seconds: 12),
+          receiveTimeout: const Duration(seconds: 20),
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                '(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'X-Goog-Api-Format-Version': '1',
+            'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
+            'Origin': 'https://music.youtube.com',
+            'Referer': 'https://music.youtube.com/',
+          },
+        ),
+      );
 
   final Dio _dio;
 
@@ -84,19 +84,12 @@ class YtMusicClient {
     );
   }
 
-  Future<Map<String, dynamic>> _searchType(
-    String query,
-    String params,
-  ) async {
+  Future<Map<String, dynamic>> _searchType(String query, String params) async {
     try {
       final response = await _dio.post<Map<String, dynamic>>(
         '/search',
         queryParameters: {'prettyPrint': 'false'},
-        data: {
-          ..._ctx,
-          'query': query,
-          'params': params,
-        },
+        data: {..._ctx, 'query': query, 'params': params},
       );
       return response.data ?? {};
     } catch (_) {
@@ -111,10 +104,7 @@ class YtMusicClient {
       final response = await _dio.post<Map<String, dynamic>>(
         '/browse',
         queryParameters: {'prettyPrint': 'false'},
-        data: {
-          ..._ctx,
-          'browseId': 'FEmusic_home',
-        },
+        data: {..._ctx, 'browseId': 'FEmusic_home'},
       );
       return _parseHome(response.data ?? {});
     } catch (_) {
@@ -129,10 +119,7 @@ class YtMusicClient {
       final response = await _dio.post<Map<String, dynamic>>(
         '/browse',
         queryParameters: {'prettyPrint': 'false'},
-        data: {
-          ..._ctx,
-          'browseId': browseId,
-        },
+        data: {..._ctx, 'browseId': browseId},
       );
       return _parseArtistDetail(response.data ?? {});
     } catch (_) {
@@ -147,10 +134,7 @@ class YtMusicClient {
       final response = await _dio.post<Map<String, dynamic>>(
         '/browse',
         queryParameters: {'prettyPrint': 'false'},
-        data: {
-          ..._ctx,
-          'browseId': browseId,
-        },
+        data: {..._ctx, 'browseId': browseId},
       );
       return _parseAlbumDetail(response.data ?? {});
     } catch (_) {
@@ -165,10 +149,7 @@ class YtMusicClient {
       final response = await _dio.post<Map<String, dynamic>>(
         '/browse',
         queryParameters: {'prettyPrint': 'false'},
-        data: {
-          ..._ctx,
-          'browseId': browseId,
-        },
+        data: {..._ctx, 'browseId': browseId},
       );
       return _parsePlaylistDetail(response.data ?? {});
     } catch (_) {
@@ -229,8 +210,18 @@ class YtMusicClient {
   static String? _thumbnail(Map<String, dynamic> renderer) {
     // Try musicThumbnailRenderer path
     final thumbs =
-        _nav<List>(renderer, ['thumbnail', 'musicThumbnailRenderer', 'thumbnail', 'thumbnails']) ??
-        _nav<List>(renderer, ['thumbnailRenderer', 'musicThumbnailRenderer', 'thumbnail', 'thumbnails']) ??
+        _nav<List>(renderer, [
+          'thumbnail',
+          'musicThumbnailRenderer',
+          'thumbnail',
+          'thumbnails',
+        ]) ??
+        _nav<List>(renderer, [
+          'thumbnailRenderer',
+          'musicThumbnailRenderer',
+          'thumbnail',
+          'thumbnails',
+        ]) ??
         _nav<List>(renderer, ['thumbnail', 'thumbnails']);
     if (thumbs == null || thumbs.isEmpty) return null;
     final best = thumbs.last as Map<String, dynamic>?;
@@ -257,8 +248,11 @@ class YtMusicClient {
   // ─── Search shelf extraction ─────────────────────────────────────────────────
 
   List<Map<String, dynamic>> _extractShelfItems(Map<String, dynamic> data) {
-    final tabs =
-        _nav<List>(data, ['contents', 'tabbedSearchResultsRenderer', 'tabs']);
+    final tabs = _nav<List>(data, [
+      'contents',
+      'tabbedSearchResultsRenderer',
+      'tabs',
+    ]);
     if (tabs == null || tabs.isEmpty) return [];
 
     final tab = tabs[0] as Map<String, dynamic>?;
@@ -271,15 +265,18 @@ class YtMusicClient {
     if (sections == null) return [];
 
     for (final section in sections) {
-      final shelf = (section as Map<String, dynamic>?)?['musicShelfRenderer']
-          as Map<String, dynamic>?;
+      final shelf =
+          (section as Map<String, dynamic>?)?['musicShelfRenderer']
+              as Map<String, dynamic>?;
       if (shelf == null) continue;
       final contents = shelf['contents'] as List?;
       if (contents == null) continue;
       return contents
           .whereType<Map<String, dynamic>>()
-          .map((c) =>
-              c['musicResponsiveListItemRenderer'] as Map<String, dynamic>?)
+          .map(
+            (c) =>
+                c['musicResponsiveListItemRenderer'] as Map<String, dynamic>?,
+          )
           .whereType<Map<String, dynamic>>()
           .toList();
     }
@@ -338,7 +335,9 @@ class YtMusicClient {
     final nonBullet = subRuns
         .whereType<Map<String, dynamic>>()
         .map((rn) => rn['text']?.toString() ?? '')
-        .where((t) => t.trim().isNotEmpty && t.trim() != '•' && t.trim() != ' • ')
+        .where(
+          (t) => t.trim().isNotEmpty && t.trim() != '•' && t.trim() != ' • ',
+        )
         .toList();
 
     final artist = nonBullet.isNotEmpty ? nonBullet[0] : 'Unknown';
@@ -361,10 +360,11 @@ class YtMusicClient {
   // ─── Artist parser ───────────────────────────────────────────────────────────
 
   YtArtist? _parseArtist(Map<String, dynamic> r) {
-    final browseId = _nav<String>(
-      r,
-      ['navigationEndpoint', 'browseEndpoint', 'browseId'],
-    );
+    final browseId = _nav<String>(r, [
+      'navigationEndpoint',
+      'browseEndpoint',
+      'browseId',
+    ]);
     if (browseId == null) return null;
 
     final name = _nav<String>(r, [
@@ -385,7 +385,8 @@ class YtMusicClient {
       'text',
       'runs',
     ]);
-    final subscribers = subRuns?.whereType<Map<String, dynamic>>()
+    final subscribers = subRuns
+        ?.whereType<Map<String, dynamic>>()
         .map((rn) => rn['text']?.toString() ?? '')
         .where((t) => t.isNotEmpty && t != '•')
         .join(' ');
@@ -401,10 +402,11 @@ class YtMusicClient {
   // ─── Album parser ────────────────────────────────────────────────────────────
 
   YtAlbum? _parseAlbum(Map<String, dynamic> r) {
-    final browseId = _nav<String>(
-      r,
-      ['navigationEndpoint', 'browseEndpoint', 'browseId'],
-    );
+    final browseId = _nav<String>(r, [
+      'navigationEndpoint',
+      'browseEndpoint',
+      'browseId',
+    ]);
     if (browseId == null) return null;
 
     final title = _nav<String>(r, [
@@ -420,13 +422,13 @@ class YtMusicClient {
 
     final subRuns =
         (_nav<List>(r, [
-              'flexColumns',
-              1,
-              'musicResponsiveListItemFlexColumnRenderer',
-              'text',
-              'runs',
-            ]) ??
-            [])
+                  'flexColumns',
+                  1,
+                  'musicResponsiveListItemFlexColumnRenderer',
+                  'text',
+                  'runs',
+                ]) ??
+                [])
             .whereType<Map<String, dynamic>>()
             .map((rn) => rn['text']?.toString() ?? '')
             .where((t) => t.isNotEmpty && t != '•' && t != ' • ')
@@ -435,7 +437,9 @@ class YtMusicClient {
     return YtAlbum(
       browseId: browseId,
       title: title,
-      artist: subRuns.length > 1 ? subRuns[1] : (subRuns.isNotEmpty ? subRuns[0] : 'Unknown'),
+      artist: subRuns.length > 1
+          ? subRuns[1]
+          : (subRuns.isNotEmpty ? subRuns[0] : 'Unknown'),
       artworkUrl: _thumbnail(r),
       year: subRuns.isNotEmpty ? subRuns.last : null,
     );
@@ -447,8 +451,20 @@ class YtMusicClient {
     final sections = <YtHomeSection>[];
 
     final contents =
-        _nav<List>(data, ['contents', 'singleColumnBrowseResultsRenderer', 'tabs', 0, 'tabRenderer', 'content', 'sectionListRenderer', 'contents']) ??
-        _nav<List>(data, ['header', 'musicImmersiveHeaderRenderer']) ?? // fallback
+        _nav<List>(data, [
+          'contents',
+          'singleColumnBrowseResultsRenderer',
+          'tabs',
+          0,
+          'tabRenderer',
+          'content',
+          'sectionListRenderer',
+          'contents',
+        ]) ??
+        _nav<List>(data, [
+          'header',
+          'musicImmersiveHeaderRenderer',
+        ]) ?? // fallback
         [];
 
     for (final raw in contents) {
@@ -458,7 +474,8 @@ class YtMusicClient {
       // musicCarouselShelfRenderer
       final carousel =
           section['musicCarouselShelfRenderer'] as Map<String, dynamic>? ??
-          section['musicImmersiveCarouselShelfRenderer'] as Map<String, dynamic>?;
+          section['musicImmersiveCarouselShelfRenderer']
+              as Map<String, dynamic>?;
       if (carousel != null) {
         final parsed = _parseCarouselSection(carousel);
         if (parsed != null) sections.add(parsed);
@@ -477,8 +494,19 @@ class YtMusicClient {
   }
 
   YtHomeSection? _parseCarouselSection(Map<String, dynamic> carousel) {
-    final titleRuns = _nav<List>(carousel, ['header', 'musicCarouselShelfBasicHeaderRenderer', 'title', 'runs']) ??
-        _nav<List>(carousel, ['header', 'musicImmersiveCarouselShelfHeaderRenderer', 'title', 'runs']);
+    final titleRuns =
+        _nav<List>(carousel, [
+          'header',
+          'musicCarouselShelfBasicHeaderRenderer',
+          'title',
+          'runs',
+        ]) ??
+        _nav<List>(carousel, [
+          'header',
+          'musicImmersiveCarouselShelfHeaderRenderer',
+          'title',
+          'runs',
+        ]);
     final title = _text(titleRuns) ?? 'Recommandé';
 
     final rawContents = carousel['contents'] as List? ?? [];
@@ -497,16 +525,19 @@ class YtMusicClient {
       }
 
       // musicResponsiveListItemRenderer
-      final list = map['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
+      final list =
+          map['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
       if (list != null) {
         final t = _parseTrack(list);
         if (t != null) {
-          items.add(YtHomeItem(
-            title: t.title,
-            subtitle: t.artist,
-            artworkUrl: t.artworkUrl,
-            videoId: t.videoId,
-          ));
+          items.add(
+            YtHomeItem(
+              title: t.title,
+              subtitle: t.artist,
+              artworkUrl: t.artworkUrl,
+              videoId: t.videoId,
+            ),
+          );
         }
       }
     }
@@ -525,16 +556,19 @@ class YtMusicClient {
     for (final raw in rawContents) {
       final map = raw as Map<String, dynamic>?;
       if (map == null) continue;
-      final list = map['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
+      final list =
+          map['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
       if (list == null) continue;
       final t = _parseTrack(list);
       if (t != null) {
-        items.add(YtHomeItem(
-          title: t.title,
-          subtitle: t.artist,
-          artworkUrl: t.artworkUrl,
-          videoId: t.videoId,
-        ));
+        items.add(
+          YtHomeItem(
+            title: t.title,
+            subtitle: t.artist,
+            artworkUrl: t.artworkUrl,
+            videoId: t.videoId,
+          ),
+        );
       }
     }
 
@@ -556,18 +590,31 @@ class YtMusicClient {
         .trim();
 
     // Thumbnail
-    final thumbs = _nav<List>(r, ['thumbnailRenderer', 'musicThumbnailRenderer', 'thumbnail', 'thumbnails']) ??
-        _nav<List>(r, ['thumbnail', 'musicThumbnailRenderer', 'thumbnail', 'thumbnails']);
+    final thumbs =
+        _nav<List>(r, [
+          'thumbnailRenderer',
+          'musicThumbnailRenderer',
+          'thumbnail',
+          'thumbnails',
+        ]) ??
+        _nav<List>(r, [
+          'thumbnail',
+          'musicThumbnailRenderer',
+          'thumbnail',
+          'thumbnails',
+        ]);
     final artworkUrl = thumbs != null && thumbs.isNotEmpty
         ? _thumbUrl(thumbs.last)
         : null;
 
     // Navigation endpoint
     final nav = r['navigationEndpoint'] as Map<String, dynamic>?;
-    final videoId = _nav<String>(nav, ['watchEndpoint', 'videoId']) ??
+    final videoId =
+        _nav<String>(nav, ['watchEndpoint', 'videoId']) ??
         _nav<String>(nav, ['watchPlaylistEndpoint', 'videoId']);
     final browseId = _nav<String>(nav, ['browseEndpoint', 'browseId']);
-    final playlistId = _nav<String>(nav, ['watchEndpoint', 'playlistId']) ??
+    final playlistId =
+        _nav<String>(nav, ['watchEndpoint', 'playlistId']) ??
         _nav<String>(nav, ['watchPlaylistEndpoint', 'playlistId']);
 
     return YtHomeItem(
@@ -584,8 +631,10 @@ class YtMusicClient {
 
   YtArtistDetail? _parseArtistDetail(Map<String, dynamic> data) {
     final header =
-        _nav<Map>(data, ['header', 'musicImmersiveHeaderRenderer']) as Map<String, dynamic>? ??
-        _nav<Map>(data, ['header', 'musicVisualHeaderRenderer']) as Map<String, dynamic>?;
+        _nav<Map>(data, ['header', 'musicImmersiveHeaderRenderer'])
+            as Map<String, dynamic>? ??
+        _nav<Map>(data, ['header', 'musicVisualHeaderRenderer'])
+            as Map<String, dynamic>?;
     if (header == null) return null;
 
     final nameRuns = _nav<List>(header, ['title', 'runs']);
@@ -594,12 +643,28 @@ class YtMusicClient {
     final descRuns = _nav<List>(header, ['description', 'runs']) ?? [];
     final description = _text(descRuns);
 
-    final subRuns = _nav<List>(header, ['subscriptionButton', 'subscribeButtonRenderer', 'longSubscriberCountText', 'runs']);
+    final subRuns = _nav<List>(header, [
+      'subscriptionButton',
+      'subscribeButtonRenderer',
+      'longSubscriberCountText',
+      'runs',
+    ]);
     final subscribers = _text(subRuns);
 
     // Artist image
-    final thumbs = _nav<List>(header, ['thumbnail', 'musicThumbnailRenderer', 'thumbnail', 'thumbnails']) ??
-        _nav<List>(header, ['foregroundThumbnail', 'musicThumbnailRenderer', 'thumbnail', 'thumbnails']);
+    final thumbs =
+        _nav<List>(header, [
+          'thumbnail',
+          'musicThumbnailRenderer',
+          'thumbnail',
+          'thumbnails',
+        ]) ??
+        _nav<List>(header, [
+          'foregroundThumbnail',
+          'musicThumbnailRenderer',
+          'thumbnail',
+          'thumbnails',
+        ]);
     final imageUrl = thumbs != null && thumbs.isNotEmpty
         ? _thumbUrl(thumbs.last)
         : null;
@@ -608,42 +673,77 @@ class YtMusicClient {
     final songs = <YtTrack>[];
     final albums = <YtAlbum>[];
 
-    final contents = _nav<List>(data, ['contents', 'singleColumnBrowseResultsRenderer', 'tabs', 0, 'tabRenderer', 'content', 'sectionListRenderer', 'contents']) ?? [];
+    final contents =
+        _nav<List>(data, [
+          'contents',
+          'singleColumnBrowseResultsRenderer',
+          'tabs',
+          0,
+          'tabRenderer',
+          'content',
+          'sectionListRenderer',
+          'contents',
+        ]) ??
+        [];
     for (final raw in contents) {
       final section = raw as Map<String, dynamic>?;
       if (section == null) continue;
 
-      final carousel = section['musicShelfRenderer'] as Map<String, dynamic>? ??
+      final carousel =
+          section['musicShelfRenderer'] as Map<String, dynamic>? ??
           section['musicCarouselShelfRenderer'] as Map<String, dynamic>?;
       if (carousel == null) continue;
 
-      final titleText = _text(
-        _nav<List>(carousel, ['header', 'musicCarouselShelfBasicHeaderRenderer', 'title', 'runs']) ??
-        _nav<List>(carousel, ['title', 'runs']),
-      )?.toLowerCase() ?? '';
+      final titleText =
+          _text(
+            _nav<List>(carousel, [
+                  'header',
+                  'musicCarouselShelfBasicHeaderRenderer',
+                  'title',
+                  'runs',
+                ]) ??
+                _nav<List>(carousel, ['title', 'runs']),
+          )?.toLowerCase() ??
+          '';
 
       final carouselContents = carousel['contents'] as List? ?? [];
-      if (titleText.contains('chanson') || titleText.contains('song') || titleText.contains('titre')) {
+      if (titleText.contains('chanson') ||
+          titleText.contains('song') ||
+          titleText.contains('titre')) {
         for (final item in carouselContents) {
-          final r = (item as Map<String, dynamic>?)?['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
+          final r =
+              (item
+                      as Map<
+                        String,
+                        dynamic
+                      >?)?['musicResponsiveListItemRenderer']
+                  as Map<String, dynamic>?;
           if (r == null) continue;
           final t = _parseTrack(r);
           if (t != null) songs.add(t);
         }
       } else if (titleText.contains('album') || titleText.contains('single')) {
         for (final item in carouselContents) {
-          final r = (item as Map<String, dynamic>?)?['musicTwoRowItemRenderer'] as Map<String, dynamic>?;
+          final r =
+              (item as Map<String, dynamic>?)?['musicTwoRowItemRenderer']
+                  as Map<String, dynamic>?;
           if (r == null) continue;
           final titleRuns = _nav<List>(r, ['title', 'runs']);
           final t = _text(titleRuns);
-          final browseId = _nav<String>(r, ['navigationEndpoint', 'browseEndpoint', 'browseId']);
+          final browseId = _nav<String>(r, [
+            'navigationEndpoint',
+            'browseEndpoint',
+            'browseId',
+          ]);
           if (t != null && browseId != null) {
-            albums.add(YtAlbum(
-              browseId: browseId,
-              title: t,
-              artist: name,
-              artworkUrl: _thumbnail(r),
-            ));
+            albums.add(
+              YtAlbum(
+                browseId: browseId,
+                title: t,
+                artist: name,
+                artworkUrl: _thumbnail(r),
+              ),
+            );
           }
         }
       }
@@ -662,9 +762,13 @@ class YtMusicClient {
   // ─── Album detail parser ─────────────────────────────────────────────────────
 
   YtAlbumDetail? _parseAlbumDetail(Map<String, dynamic> data) {
-    final header = _nav<Map>(data, ['header', 'musicDetailHeaderRenderer']) as Map<String, dynamic>? ??
-        _nav<Map>(data, ['header', 'musicImmersiveHeaderRenderer']) as Map<String, dynamic>? ??
-        _nav<Map>(data, ['header', 'musicResponsiveHeaderRenderer']) as Map<String, dynamic>?;
+    final header =
+        _nav<Map>(data, ['header', 'musicDetailHeaderRenderer'])
+            as Map<String, dynamic>? ??
+        _nav<Map>(data, ['header', 'musicImmersiveHeaderRenderer'])
+            as Map<String, dynamic>? ??
+        _nav<Map>(data, ['header', 'musicResponsiveHeaderRenderer'])
+            as Map<String, dynamic>?;
     if (header == null) return null;
 
     final titleRuns = _nav<List>(header, ['title', 'runs']);
@@ -680,32 +784,76 @@ class YtMusicClient {
         .map((r) => r['text']?.toString() ?? '')
         .where((t) => t.isNotEmpty && t != ' • ')
         .toList();
-    final artist = straplineArtist ?? (subtitleParts.isNotEmpty ? subtitleParts[0] : 'Unknown');
+    final artist =
+        straplineArtist ??
+        (subtitleParts.isNotEmpty ? subtitleParts[0] : 'Unknown');
     // For musicResponsiveHeaderRenderer subtitle is year/type only; for others artist is first run
     String? year;
     if (straplineArtist != null) {
-      final y = subtitleParts.firstWhere((t) => RegExp(r'^\d{4}$').hasMatch(t), orElse: () => '');
+      final y = subtitleParts.firstWhere(
+        (t) => RegExp(r'^\d{4}$').hasMatch(t),
+        orElse: () => '',
+      );
       year = y.isEmpty ? null : y;
     } else {
       year = subtitleParts.length > 1 ? subtitleParts[1] : null;
     }
 
-    final thumbs = _nav<List>(header, ['thumbnail', 'croppedSquareThumbnailRenderer', 'thumbnail', 'thumbnails']) ??
-        _nav<List>(header, ['thumbnail', 'musicThumbnailRenderer', 'thumbnail', 'thumbnails']);
+    final thumbs =
+        _nav<List>(header, [
+          'thumbnail',
+          'croppedSquareThumbnailRenderer',
+          'thumbnail',
+          'thumbnails',
+        ]) ??
+        _nav<List>(header, [
+          'thumbnail',
+          'musicThumbnailRenderer',
+          'thumbnail',
+          'thumbnails',
+        ]);
     final artworkUrl = thumbs != null && thumbs.isNotEmpty
         ? _thumbUrl(thumbs.last)
         : null;
 
     final tracks = <YtTrack>[];
-    final contents = _nav<List>(data, ['contents', 'singleColumnBrowseResultsRenderer', 'tabs', 0, 'tabRenderer', 'content', 'sectionListRenderer', 'contents']) ?? [];
+    final contents =
+        _nav<List>(data, [
+          'contents',
+          'singleColumnBrowseResultsRenderer',
+          'tabs',
+          0,
+          'tabRenderer',
+          'content',
+          'sectionListRenderer',
+          'contents',
+        ]) ??
+        [];
     for (final raw in contents) {
-      final shelf = (raw as Map<String, dynamic>?)?['musicShelfRenderer'] as Map<String, dynamic>?;
+      final shelf =
+          (raw as Map<String, dynamic>?)?['musicShelfRenderer']
+              as Map<String, dynamic>?;
       if (shelf == null) continue;
       for (final item in shelf['contents'] as List? ?? []) {
-        final r = (item as Map<String, dynamic>?)?['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
+        final r =
+            (item as Map<String, dynamic>?)?['musicResponsiveListItemRenderer']
+                as Map<String, dynamic>?;
         if (r == null) continue;
         final t = _parseTrack(r);
-        if (t != null) tracks.add(t.videoId.isNotEmpty ? t : YtTrack(videoId: t.videoId, title: t.title, artist: artist, album: title, artworkUrl: artworkUrl ?? t.artworkUrl, durationMs: t.durationMs));
+        if (t != null) {
+          tracks.add(
+            t.videoId.isNotEmpty
+                ? t
+                : YtTrack(
+                    videoId: t.videoId,
+                    title: t.title,
+                    artist: artist,
+                    album: title,
+                    artworkUrl: artworkUrl ?? t.artworkUrl,
+                    durationMs: t.durationMs,
+                  ),
+          );
+        }
       }
     }
 
@@ -721,58 +869,143 @@ class YtMusicClient {
   // ─── Playlist detail parser ──────────────────────────────────────────────────
 
   YtPlaylistDetail? _parsePlaylistDetail(Map<String, dynamic> data) {
-    final headerV1 = _nav<Map>(data, ['header', 'musicDetailHeaderRenderer']) as Map<String, dynamic>?;
-    final headerV2 = _nav<Map>(data, ['header', 'musicEditablePlaylistDetailHeaderRenderer', 'header', 'musicDetailHeaderRenderer']) as Map<String, dynamic>?
-        ?? _nav<Map>(data, ['header', 'musicImmersiveHeaderRenderer']) as Map<String, dynamic>?
-        ?? _nav<Map>(data, ['header', 'musicResponsiveHeaderRenderer']) as Map<String, dynamic>?;
+    final headerV1 =
+        _nav<Map>(data, ['header', 'musicDetailHeaderRenderer'])
+            as Map<String, dynamic>?;
+    final headerV2 =
+        _nav<Map>(data, [
+              'header',
+              'musicEditablePlaylistDetailHeaderRenderer',
+              'header',
+              'musicDetailHeaderRenderer',
+            ])
+            as Map<String, dynamic>? ??
+        _nav<Map>(data, ['header', 'musicImmersiveHeaderRenderer'])
+            as Map<String, dynamic>? ??
+        _nav<Map>(data, ['header', 'musicResponsiveHeaderRenderer'])
+            as Map<String, dynamic>?;
     final header = headerV1 ?? headerV2;
 
     final title = header != null
         ? _text(_nav<List>(header, ['title', 'runs'])) ?? 'Playlist'
         : 'Playlist';
 
-    List<dynamic>? _artworkThumbs(Map<String, dynamic>? h) {
+    List<dynamic>? artworkThumbs(Map<String, dynamic>? h) {
       if (h == null) return null;
-      return _nav<List>(h, ['thumbnail', 'croppedSquareThumbnailRenderer', 'thumbnail', 'thumbnails'])
-          ?? _nav<List>(h, ['thumbnail', 'musicThumbnailRenderer', 'thumbnail', 'thumbnails'])
-          ?? _nav<List>(h, ['foregroundThumbnail', 'musicThumbnailRenderer', 'thumbnail', 'thumbnails']);
+      return _nav<List>(h, [
+            'thumbnail',
+            'croppedSquareThumbnailRenderer',
+            'thumbnail',
+            'thumbnails',
+          ]) ??
+          _nav<List>(h, [
+            'thumbnail',
+            'musicThumbnailRenderer',
+            'thumbnail',
+            'thumbnails',
+          ]) ??
+          _nav<List>(h, [
+            'foregroundThumbnail',
+            'musicThumbnailRenderer',
+            'thumbnail',
+            'thumbnails',
+          ]);
     }
-    final thumbs = _artworkThumbs(header)
-        ?? _artworkThumbs(_nav<Map>(data, ['header', 'musicEditablePlaylistDetailHeaderRenderer']) as Map<String, dynamic>?);
-    final artworkUrl = thumbs != null && thumbs.isNotEmpty ? _thumbUrl(thumbs.last) : null;
+
+    final thumbs =
+        artworkThumbs(header) ??
+        artworkThumbs(
+          _nav<Map>(data, [
+                'header',
+                'musicEditablePlaylistDetailHeaderRenderer',
+              ])
+              as Map<String, dynamic>?,
+        );
+    final artworkUrl = thumbs != null && thumbs.isNotEmpty
+        ? _thumbUrl(thumbs.last)
+        : null;
 
     // Try single-column path (mobile InnerTube)
-    final singleCol = _nav<List>(data, ['contents', 'singleColumnBrowseResultsRenderer', 'tabs', 0, 'tabRenderer', 'content', 'sectionListRenderer', 'contents']) ?? [];
+    final singleCol =
+        _nav<List>(data, [
+          'contents',
+          'singleColumnBrowseResultsRenderer',
+          'tabs',
+          0,
+          'tabRenderer',
+          'content',
+          'sectionListRenderer',
+          'contents',
+        ]) ??
+        [];
     // Try two-column path (newer InnerTube playlists)
-    final twoColPrimary = _nav<List>(data, ['contents', 'twoColumnBrowseResultsRenderer', 'secondaryContents', 'sectionListRenderer', 'contents']) ?? [];
-    final twoColTab = _nav<List>(data, ['contents', 'twoColumnBrowseResultsRenderer', 'tabs', 0, 'tabRenderer', 'content', 'sectionListRenderer', 'contents']) ?? [];
-    final contents = singleCol.isNotEmpty ? singleCol : (twoColPrimary.isNotEmpty ? twoColPrimary : twoColTab);
+    final twoColPrimary =
+        _nav<List>(data, [
+          'contents',
+          'twoColumnBrowseResultsRenderer',
+          'secondaryContents',
+          'sectionListRenderer',
+          'contents',
+        ]) ??
+        [];
+    final twoColTab =
+        _nav<List>(data, [
+          'contents',
+          'twoColumnBrowseResultsRenderer',
+          'tabs',
+          0,
+          'tabRenderer',
+          'content',
+          'sectionListRenderer',
+          'contents',
+        ]) ??
+        [];
+    final contents = singleCol.isNotEmpty
+        ? singleCol
+        : (twoColPrimary.isNotEmpty ? twoColPrimary : twoColTab);
 
     final tracks = <YtTrack>[];
     for (final raw in contents) {
-      final shelf = (raw as Map<String, dynamic>?)?['musicShelfRenderer'] as Map<String, dynamic>?
-          ?? (raw as Map<String, dynamic>?)?['musicPlaylistShelfRenderer'] as Map<String, dynamic>?;
+      final rawMap = raw as Map<String, dynamic>?;
+      final shelf =
+          rawMap?['musicShelfRenderer'] as Map<String, dynamic>? ??
+          rawMap?['musicPlaylistShelfRenderer'] as Map<String, dynamic>?;
       if (shelf == null) continue;
       for (final item in shelf['contents'] as List? ?? []) {
-        final r = (item as Map<String, dynamic>?)?['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
+        final r =
+            (item as Map<String, dynamic>?)?['musicResponsiveListItemRenderer']
+                as Map<String, dynamic>?;
         if (r == null) continue;
         final t = _parseTrack(r);
         if (t != null) tracks.add(t);
       }
     }
 
-    return YtPlaylistDetail(title: title, artworkUrl: artworkUrl, tracks: tracks);
+    return YtPlaylistDetail(
+      title: title,
+      artworkUrl: artworkUrl,
+      tracks: tracks,
+    );
   }
 
   // ─── Radio parser ────────────────────────────────────────────────────────────
 
   List<YtTrack> _parseRadio(Map<String, dynamic> data) {
     final tracks = <YtTrack>[];
-    final playlist = _nav<Map>(data, ['contents', 'singleColumnMusicWatchNextResultsRenderer', 'playlist', 'playlistPanelRenderer']) as Map<String, dynamic>?;
+    final playlist =
+        _nav<Map>(data, [
+              'contents',
+              'singleColumnMusicWatchNextResultsRenderer',
+              'playlist',
+              'playlistPanelRenderer',
+            ])
+            as Map<String, dynamic>?;
     if (playlist == null) return [];
 
     for (final item in playlist['contents'] as List? ?? []) {
-      final r = (item as Map<String, dynamic>?)?['playlistPanelVideoRenderer'] as Map<String, dynamic>?;
+      final r =
+          (item as Map<String, dynamic>?)?['playlistPanelVideoRenderer']
+              as Map<String, dynamic>?;
       if (r == null) continue;
 
       final videoId = r['videoId']?.toString();
@@ -789,12 +1022,14 @@ class YtMusicClient {
           ? _thumbUrl(thumbs.last)
           : null;
 
-      tracks.add(YtTrack(
-        videoId: videoId,
-        title: title,
-        artist: artist,
-        artworkUrl: artworkUrl,
-      ));
+      tracks.add(
+        YtTrack(
+          videoId: videoId,
+          title: title,
+          artist: artist,
+          artworkUrl: artworkUrl,
+        ),
+      );
     }
     return tracks;
   }

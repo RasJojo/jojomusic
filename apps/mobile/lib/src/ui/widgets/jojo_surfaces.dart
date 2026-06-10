@@ -1,14 +1,124 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' show ImageFilter;
 
 import 'package:audio_service/audio_service.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/artwork_cache.dart';
 import '../../models/app_models.dart';
 import '../../state/library_controller.dart';
 import '../../state/player_controller.dart';
 import '../theme/jojo_theme.dart';
 import 'media_artwork.dart';
+
+// ─── iTunes artwork cache ─────────────────────────────────────────────────────
+
+final _itunesCache = <String, String?>{};
+final _itunesInFlight = <String, Future<String?>>{};
+
+final _itunesDio = Dio(BaseOptions(
+  connectTimeout: const Duration(seconds: 6),
+  receiveTimeout: const Duration(seconds: 6),
+));
+
+// Strip "& ...", "feat. ...", etc. to get the primary artist
+String _primaryArtist(String artist) =>
+    artist.split(RegExp(r'\s*(?:&|,|feat\.?|ft\.?|featuring|avec)\s*', caseSensitive: false)).first.trim();
+
+Future<String?> _fetchItunesArtwork(String artist, String title) async {
+  final key = '$artist\x00$title';
+  if (_itunesCache.containsKey(key)) return _itunesCache[key];
+  if (_itunesInFlight.containsKey(key)) return _itunesInFlight[key];
+
+  final future = () async {
+    final primary = _primaryArtist(artist);
+    final queries = <String>{
+      if (primary != artist) '$primary $title',
+      '$artist $title',
+      title,
+    };
+    for (final q in queries) {
+      try {
+        final response = await _itunesDio.get<Map<String, dynamic>>(
+          'https://itunes.apple.com/search',
+          queryParameters: {'term': q, 'entity': 'song', 'limit': '5', 'media': 'music'},
+        );
+        final results = (response.data?['results'] as List<dynamic>?) ?? [];
+        if (results.isNotEmpty) {
+          final url = results.first['artworkUrl100'] as String?;
+          if (url != null) return url.replaceFirst('100x100bb', '600x600bb');
+        }
+      } catch (_) {}
+    }
+    return null;
+  }();
+
+  _itunesInFlight[key] = future;
+  final result = await future;
+  _itunesCache[key] = result;
+  _itunesInFlight.remove(key);
+  return result;
+}
+
+class _TrackArtwork extends StatefulWidget {
+  const _TrackArtwork({required this.track, required this.size});
+  final Track track;
+  final double size;
+
+  @override
+  State<_TrackArtwork> createState() => _TrackArtworkState();
+}
+
+class _TrackArtworkState extends State<_TrackArtwork> {
+  String? _resolvedUrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolve();
+  }
+
+  @override
+  void didUpdateWidget(_TrackArtwork old) {
+    super.didUpdateWidget(old);
+    if (old.track.trackKey != widget.track.trackKey) {
+      _resolvedUrl = null;
+      _resolve();
+    }
+  }
+
+  void _resolve() {
+    // 1. Direct URL from DB
+    final direct = widget.track.displayArtworkUrl;
+    if (direct != null) {
+      _resolvedUrl = direct;
+      return;
+    }
+    // 2. URL resolved at playback time (thumbnailUrl from YouTube resolve)
+    final cached = resolvedArtworkCache[widget.track.trackKey];
+    if (cached != null) {
+      _resolvedUrl = cached;
+      return;
+    }
+    // 3. iTunes fallback (async)
+    final itunesKey = '${widget.track.artist}\x00${widget.track.title}';
+    if (_itunesCache.containsKey(itunesKey)) {
+      _resolvedUrl = _itunesCache[itunesKey];
+      return;
+    }
+    _fetchItunesArtwork(widget.track.artist, widget.track.title).then((url) {
+      if (mounted) setState(() => _resolvedUrl = url);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MediaArtwork(url: _resolvedUrl, size: widget.size, borderRadius: 16);
+  }
+}
 
 class JojoPageScaffold extends StatelessWidget {
   const JojoPageScaffold({
@@ -26,44 +136,20 @@ class JojoPageScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final lead = topColor ?? const Color(0xFF13312D);
     return Scaffold(
       bottomNavigationBar: bottomNavigationBar,
-      body: DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [lead, const Color(0xFF091617), JojoColors.canvas],
-          ),
-        ),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            const _BackdropGlow(
-              alignment: Alignment.topRight,
-              color: Color(0x3D61F5B9),
-              size: 260,
-            ),
-            const _BackdropGlow(
-              alignment: Alignment.topLeft,
-              color: Color(0x20FE8A3E),
-              size: 220,
-            ),
-            SafeArea(
-              bottom: false,
-              child: maxContentWidth == null
-                  ? child
-                  : Align(
-                      alignment: Alignment.topCenter,
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(maxWidth: maxContentWidth!),
-                        child: child,
-                      ),
-                    ),
-            ),
-          ],
-        ),
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        bottom: false,
+        child: maxContentWidth == null
+            ? child
+            : Align(
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: maxContentWidth!),
+                  child: child,
+                ),
+              ),
       ),
     );
   }
@@ -84,19 +170,10 @@ class JojoSectionHeading extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: Theme.of(context).textTheme.titleLarge),
-              if (subtitle != null && subtitle!.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(subtitle!, style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ],
-          ),
+          child: Text(title, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
         ),
         // ignore: use_null_aware_elements
         if (trailing != null) trailing!,
@@ -108,47 +185,39 @@ class JojoSectionHeading extends StatelessWidget {
 class JojoHeroPanel extends StatelessWidget {
   const JojoHeroPanel({
     required this.title,
-    required this.subtitle,
     super.key,
+    this.subtitle,
     this.label,
     this.artworkUrl,
     this.circularArtwork = false,
     this.accentColor = const Color(0xFF13312D),
     this.actions = const [],
     this.metadata = const [],
+    this.headerTrailing,
   });
 
   final String title;
-  final String subtitle;
+  final String? subtitle;
   final String? label;
   final String? artworkUrl;
   final bool circularArtwork;
   final Color accentColor;
   final List<Widget> actions;
   final List<String> metadata;
+  final Widget? headerTrailing;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final card = ClipRRect(
+      borderRadius: BorderRadius.circular(32),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        child: Container(
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(32),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            accentColor.withValues(alpha: 0.96),
-            const Color(0xFF0A1718),
-          ],
-        ),
-        border: Border.all(color: const Color(0x1FFFFFFF)),
-        boxShadow: [
-          BoxShadow(
-            color: accentColor.withValues(alpha: 0.24),
-            blurRadius: 30,
-            offset: const Offset(0, 16),
-          ),
-        ],
+        color: Colors.white.withValues(alpha: 0.07),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
       ),
       child: Column(
         children: [
@@ -167,11 +236,13 @@ class JojoHeroPanel extends StatelessWidget {
                       title,
                       style: Theme.of(context).textTheme.headlineMedium,
                     ),
-                    const SizedBox(height: 10),
-                    Text(
-                      subtitle,
-                      style: Theme.of(context).textTheme.bodyLarge,
-                    ),
+                    if (subtitle != null && subtitle!.isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        subtitle!,
+                        style: Theme.of(context).textTheme.bodyLarge,
+                      ),
+                    ],
                     if (metadata.isNotEmpty) ...[
                       const SizedBox(height: 18),
                       Wrap(
@@ -207,6 +278,20 @@ class JojoHeroPanel extends StatelessWidget {
           ],
         ],
       ),
+        ),
+      ),
+    );
+
+    if (headerTrailing == null) return card;
+    return Stack(
+      children: [
+        card,
+        Positioned(
+          top: 10,
+          right: 10,
+          child: headerTrailing!,
+        ),
+      ],
     );
   }
 }
@@ -225,20 +310,19 @@ class JojoSurfaceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: JojoColors.surface,
-        borderRadius: BorderRadius.circular(radius),
-        border: Border.all(color: const Color(0x24FFFFFF)),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x18000000),
-            blurRadius: 18,
-            offset: Offset(0, 10),
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.07),
+            borderRadius: BorderRadius.circular(radius),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
           ),
-        ],
+          child: Padding(padding: padding, child: child),
+        ),
       ),
-      child: Padding(padding: padding, child: child),
     );
   }
 }
@@ -246,9 +330,9 @@ class JojoSurfaceCard extends StatelessWidget {
 class JojoPosterCard extends StatefulWidget {
   const JojoPosterCard({
     required this.title,
-    required this.subtitle,
     required this.onTap,
     super.key,
+    this.subtitle,
     this.artworkUrl,
     this.badge,
     this.width = 176,
@@ -258,7 +342,7 @@ class JojoPosterCard extends StatefulWidget {
   });
 
   final String title;
-  final String subtitle;
+  final String? subtitle;
   final String? artworkUrl;
   final String? badge;
   final double width;
@@ -278,16 +362,13 @@ class _JojoPosterCardState extends State<JojoPosterCard> {
   @override
   Widget build(BuildContext context) {
     final borderColor = _pressed
-        ? JojoColors.primary.withValues(alpha: 0.42)
+        ? Colors.white.withValues(alpha: 0.42)
         : _hovered
-        ? Colors.white.withValues(alpha: 0.18)
-        : const Color(0x1FFFFFFF);
+        ? Colors.white.withValues(alpha: 0.20)
+        : Colors.white.withValues(alpha: 0.10);
     final cardColor = _hovered
-        ? Color.alphaBlend(
-            Colors.white.withValues(alpha: 0.035),
-            widget.backgroundColor,
-          )
-        : widget.backgroundColor;
+        ? Colors.white.withValues(alpha: 0.10)
+        : Colors.white.withValues(alpha: 0.07);
     return SizedBox(
       width: widget.width,
       child: AnimatedScale(
@@ -304,14 +385,6 @@ class _JojoPosterCardState extends State<JojoPosterCard> {
               borderRadius: BorderRadius.circular(24),
               color: cardColor,
               border: Border.all(color: borderColor),
-              boxShadow: [
-                if (_hovered || _pressed)
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.26),
-                    blurRadius: 22,
-                    offset: const Offset(0, 14),
-                  ),
-              ],
             ),
             child: Padding(
               padding: const EdgeInsets.all(14),
@@ -322,7 +395,7 @@ class _JojoPosterCardState extends State<JojoPosterCard> {
                     children: [
                       MediaArtwork(
                         url: widget.artworkUrl,
-                        size: widget.height,
+                        size: math.min(widget.height, widget.width - 28.0),
                         borderRadius: 20,
                         isCircular: widget.circularArtwork,
                         icon: widget.circularArtwork
@@ -341,18 +414,35 @@ class _JojoPosterCardState extends State<JojoPosterCard> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  Text(
-                    widget.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    widget.subtitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
+                  Expanded(
+                    child: ClipRect(
+                      child: OverflowBox(
+                        alignment: Alignment.topLeft,
+                        minHeight: 0,
+                        maxHeight: double.infinity,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              widget.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                            if (widget.subtitle != null && widget.subtitle!.isNotEmpty) ...[
+                              const SizedBox(height: 5),
+                              Text(
+                                widget.subtitle!,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -374,7 +464,7 @@ class JojoTrackTile extends ConsumerStatefulWidget {
     this.queueLabel,
     this.trailing,
     this.statusIndicator,
-    this.dense = false,
+    this.dense = true,
   });
 
   final Track track;
@@ -425,7 +515,7 @@ class _JojoTrackTileState extends ConsumerState<JojoTrackTile> {
                     (isCurrent
                         ? const Icon(
                             Icons.graphic_eq_rounded,
-                            color: JojoColors.primary,
+                            color: Colors.white,
                           )
                         : widget.onMore != null
                         ? IconButton(
@@ -443,15 +533,15 @@ class _JojoTrackTileState extends ConsumerState<JojoTrackTile> {
           final borderColor = isLoading
               ? JojoColors.secondary.withValues(alpha: 0.78)
               : isCurrent
-              ? JojoColors.primary.withValues(alpha: 0.72)
+              ? Colors.white.withValues(alpha: 0.60)
               : _hovered
               ? Colors.white.withValues(alpha: 0.18)
-              : const Color(0x14FFFFFF);
+              : Colors.white.withValues(alpha: 0.08);
           final tileColor = isCurrent
-              ? const Color(0x8A12312D)
+              ? Colors.white.withValues(alpha: 0.12)
               : _hovered
-              ? const Color(0x8F122122)
-              : const Color(0x660C1718);
+              ? Colors.white.withValues(alpha: 0.07)
+              : Colors.white.withValues(alpha: 0.04);
 
           return InkWell(
             onTap: widget.onTap,
@@ -492,7 +582,7 @@ class _JojoTrackTileState extends ConsumerState<JojoTrackTile> {
                       color: isLoading
                           ? JojoColors.secondary
                           : isCurrent
-                          ? JojoColors.primary
+                          ? Colors.white
                           : Colors.transparent,
                       borderRadius: BorderRadius.circular(999),
                     ),
@@ -506,19 +596,16 @@ class _JojoTrackTileState extends ConsumerState<JojoTrackTile> {
                         style: Theme.of(context).textTheme.titleMedium
                             ?.copyWith(
                               color: isCurrent
-                                  ? JojoColors.primary
+                                  ? Colors.white
                                   : JojoColors.mutedStrong,
                             ),
                         textAlign: TextAlign.center,
                       ),
                     )
                   else
-                    MediaArtwork(
-                      url:
-                          widget.track.artworkUrl ??
-                          widget.track.artistImageUrl,
+                    _TrackArtwork(
+                      track: widget.track,
                       size: widget.dense ? 52 : 58,
-                      borderRadius: 16,
                     ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -529,10 +616,7 @@ class _JojoTrackTileState extends ConsumerState<JojoTrackTile> {
                           widget.track.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(
-                                color: isCurrent ? JojoColors.primary : null,
-                              ),
+                          style: Theme.of(context).textTheme.titleMedium,
                         ),
                         const SizedBox(height: 4),
                         Text(
@@ -543,12 +627,7 @@ class _JojoTrackTileState extends ConsumerState<JojoTrackTile> {
                                   .join(' • '),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(
-                                color: isCurrent
-                                    ? JojoColors.text.withValues(alpha: 0.86)
-                                    : null,
-                              ),
+                          style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ],
                     ),
@@ -608,11 +687,13 @@ class JojoQueueTile extends StatelessWidget {
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(22),
-          color: isCurrent ? const Color(0x8A12312D) : const Color(0x660C1718),
+          color: isCurrent
+              ? Colors.white.withValues(alpha: 0.12)
+              : Colors.white.withValues(alpha: 0.04),
           border: Border.all(
             color: isCurrent
-                ? JojoColors.primary.withValues(alpha: 0.72)
-                : const Color(0x14FFFFFF),
+                ? Colors.white.withValues(alpha: 0.60)
+                : Colors.white.withValues(alpha: 0.08),
           ),
         ),
         child: Row(
@@ -622,7 +703,7 @@ class JojoQueueTile extends StatelessWidget {
               child: Text(
                 '${index + 1}',
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: isCurrent ? JojoColors.primary : JojoColors.mutedStrong,
+                  color: isCurrent ? Colors.white : JojoColors.mutedStrong,
                 ),
                 textAlign: TextAlign.center,
               ),
@@ -642,9 +723,7 @@ class JojoQueueTile extends StatelessWidget {
                     item.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: isCurrent ? JojoColors.primary : null,
-                    ),
+                    style: Theme.of(context).textTheme.titleMedium,
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -662,7 +741,7 @@ class JojoQueueTile extends StatelessWidget {
             const SizedBox(width: 8),
             Icon(
               isCurrent ? Icons.graphic_eq_rounded : Icons.chevron_right_rounded,
-              color: isCurrent ? JojoColors.primary : JojoColors.mutedStrong,
+              color: isCurrent ? Colors.white : JojoColors.mutedStrong,
             ),
           ],
         ),
@@ -703,10 +782,10 @@ class _TrackLibraryIndicators extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
               decoration: BoxDecoration(
-                color: JojoColors.primary.withValues(alpha: 0.12),
+                color: Colors.white.withValues(alpha: 0.10),
                 borderRadius: BorderRadius.circular(999),
                 border: Border.all(
-                  color: JojoColors.primary.withValues(alpha: 0.24),
+                  color: Colors.white.withValues(alpha: 0.20),
                 ),
               ),
               child: Row(
@@ -715,14 +794,14 @@ class _TrackLibraryIndicators extends StatelessWidget {
                   const Icon(
                     Icons.playlist_add_check_circle_rounded,
                     size: 16,
-                    color: JojoColors.primary,
+                    color: Colors.white,
                   ),
                   if (playlistCount > 1) ...[
                     const SizedBox(width: 4),
                     Text(
                       '$playlistCount',
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: JojoColors.primary,
+                        color: Colors.white,
                         fontWeight: FontWeight.w800,
                       ),
                     ),
@@ -755,10 +834,10 @@ class JojoStateMessage extends StatelessWidget {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: JojoColors.surfaceBright,
+              color: Colors.white.withValues(alpha: 0.10),
               borderRadius: BorderRadius.circular(14),
             ),
-            child: Icon(icon, color: JojoColors.primary),
+            child: Icon(icon, color: Colors.white),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -795,42 +874,14 @@ class JojoPageHeader extends StatelessWidget {
       children: [
         if (leading != null) ...[leading!, const SizedBox(width: 14)],
         Expanded(
-          child: useInlineDesktopHeader
-              ? Row(
-                  children: [
-                    Flexible(
-                      fit: FlexFit.loose,
-                      child: Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                    ),
-                    if (subtitle != null && subtitle!.isNotEmpty) ...[
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Text(
-                          subtitle!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(color: JojoColors.muted),
-                        ),
-                      ),
-                    ],
-                  ],
-                )
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: Theme.of(context).textTheme.headlineMedium),
-                    if (subtitle != null && subtitle!.isNotEmpty) ...[
-                      const SizedBox(height: 6),
-                      Text(subtitle!, style: Theme.of(context).textTheme.bodyMedium),
-                    ],
-                  ],
-                ),
+          child: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: useInlineDesktopHeader
+                ? Theme.of(context).textTheme.headlineSmall
+                : Theme.of(context).textTheme.headlineMedium,
+          ),
         ),
         // ignore: use_null_aware_elements
         if (trailing != null) trailing!,
@@ -852,7 +903,7 @@ class JojoIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: const Color(0x660B1718),
+      color: Colors.white.withValues(alpha: 0.10),
       shape: const CircleBorder(),
       child: IconButton(onPressed: onPressed, icon: Icon(icon)),
     );
@@ -885,34 +936,6 @@ class _MetaPill extends StatelessWidget {
   }
 }
 
-class _BackdropGlow extends StatelessWidget {
-  const _BackdropGlow({
-    required this.alignment,
-    required this.color,
-    required this.size,
-  });
-
-  final Alignment alignment;
-  final Color color;
-  final double size;
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: Align(
-        alignment: alignment,
-        child: Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: RadialGradient(colors: [color, Colors.transparent]),
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 String formatCompactDate(DateTime? value) {
   if (value == null) {

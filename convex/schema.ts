@@ -145,4 +145,70 @@ export default defineSchema({
   })
     .index("by_user", ["userId"])
     .index("by_user_episode", ["userId", "episodeKey"]),
+
+  savedAlbums: defineTable({
+    userId: v.id("users"),
+    albumKey: v.string(),
+    albumPayload: v.any(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_album", ["userId", "albumKey"]),
+
+  apiCache: defineTable({
+    key: v.string(),
+    value: v.any(),
+    cachedAt: v.number(),
+  }).index("by_key", ["key"]),
+
+  // ─── JojoFlix tables ────────────────────────────────────────────────────────
+
+  jfProfiles: defineTable({
+    userId: v.string(),
+    name: v.string(),
+    avatarUrl: v.optional(v.string()),
+    isKids: v.boolean(),
+    preferences: v.any(),
+    createdAtMs: v.number(),
+    updatedAtMs: v.number(),
+  }).index("by_user_id", ["userId"]),
+
+  jfWatchHistories: defineTable({
+    profileId: v.id("jfProfiles"),
+    tmdbId: v.string(),
+    mediaType: v.union(v.literal("movie"), v.literal("tv")),
+    seasonNum: v.optional(v.number()),
+    episodeNum: v.optional(v.number()),
+    currentTime: v.number(),
+    totalDuration: v.number(),
+    isFinished: v.boolean(),
+    createdAtMs: v.number(),
+    updatedAtMs: v.number(),
+  })
+    .index("by_profile", ["profileId"])
+    .index("by_profile_tmdb", ["profileId", "tmdbId"]),
+
+  jfProfileInterests: defineTable({
+    profileId: v.id("jfProfiles"),
+    genreId: v.number(),
+    affinityScore: v.number(),
+    lastWatchedAtMs: v.optional(v.number()),
+    createdAtMs: v.number(),
+    updatedAtMs: v.number(),
+  })
+    .index("by_profile", ["profileId"])
+    .index("by_profile_genre", ["profileId", "genreId"]),
+
+  jfMediaMarkers: defineTable({
+    tmdbId: v.string(),
+    markerType: v.union(v.literal("intro"), v.literal("outro")),
+    startTime: v.number(),
+    endTime: v.number(),
+    createdAtMs: v.number(),
+  }).index("by_tmdb_id", ["tmdbId"]),
+
+  jfApiCache: defineTable({
+    key: v.string(),
+    value: v.any(),
+    expiresAtMs: v.number(),
+  }).index("by_key", ["key"]),
 });

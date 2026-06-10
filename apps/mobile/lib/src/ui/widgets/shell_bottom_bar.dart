@@ -14,7 +14,7 @@ class ShellBottomBar extends ConsumerWidget {
     final selectedIndex = ref.watch(shellTabIndexProvider).clamp(0, 2);
     return Container(
       decoration: const BoxDecoration(
-        color: Color(0xF0071112),
+        color: Colors.black,
         border: Border(top: BorderSide(color: Color(0x1FFFFFFF))),
       ),
       child: Column(
@@ -29,6 +29,7 @@ class ShellBottomBar extends ConsumerWidget {
                 Navigator.of(context).popUntil((route) => route.isFirst);
               }
             },
+            labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
             destinations: const [
               NavigationDestination(
                 icon: Icon(Icons.home_outlined),

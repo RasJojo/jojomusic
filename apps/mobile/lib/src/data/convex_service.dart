@@ -43,12 +43,13 @@ class ConvexService {
   // ─── Playlists ────────────────────────────────────────────────────────────
 
   Future<List<Playlist>> listPlaylists(String convexUserId) async {
-    final result = await _client.query(
-      'playlists:list',
-      {'userId': convexUserId},
-    );
+    final result = await _client.query('playlists:list', {
+      'userId': convexUserId,
+    });
     final list = _decodeList(result);
-    return list.map((json) => _playlistFromConvex(json as Map<String, dynamic>)).toList();
+    return list
+        .map((json) => _playlistFromConvex(json as Map<String, dynamic>))
+        .toList();
   }
 
   Future<String> createPlaylist({
@@ -63,7 +64,7 @@ class ConvexService {
         'userId': convexUserId,
         'name': name,
         'description': description,
-        if (artworkUrl != null) 'artworkUrl': artworkUrl,
+        'artworkUrl': ?artworkUrl,
       },
     );
     return _decode(result) as String;
@@ -95,9 +96,9 @@ class ConvexService {
       args: {
         'playlistId': playlistId,
         'userId': convexUserId,
-        if (name != null) 'name': name,
-        if (description != null) 'description': description,
-        if (artworkUrl != null) 'artworkUrl': artworkUrl,
+        'name': ?name,
+        'description': ?description,
+        'artworkUrl': ?artworkUrl,
       },
     );
   }
@@ -146,16 +147,17 @@ class ConvexService {
   // ─── Saved Tracks (likes) ─────────────────────────────────────────────────
 
   Future<List<Track>> listSavedTracks(String convexUserId) async {
-    final result = await _client.query(
-      'savedTracks:list',
-      {'userId': convexUserId},
-    );
+    final result = await _client.query('savedTracks:list', {
+      'userId': convexUserId,
+    });
     final list = _decodeList(result);
     return list
-        .map((item) => Track.fromJson(
-              (item as Map<String, dynamic>)['trackPayload']
-                  as Map<String, dynamic>,
-            ))
+        .map(
+          (item) => Track.fromJson(
+            (item as Map<String, dynamic>)['trackPayload']
+                as Map<String, dynamic>,
+          ),
+        )
         .toList();
   }
 
@@ -200,7 +202,7 @@ class ConvexService {
         'trackPayload': track.toJson(),
         'isPlaying': isPlaying,
         'positionMs': positionMs,
-        if (deviceId != null) 'deviceId': deviceId,
+        'deviceId': ?deviceId,
       },
     );
   }
@@ -234,9 +236,9 @@ class ConvexService {
           if (data == null) {
             controller.add(null);
           } else {
-            controller.add(RemotePlaybackState.fromJson(
-              data as Map<String, dynamic>,
-            ));
+            controller.add(
+              RemotePlaybackState.fromJson(data as Map<String, dynamic>),
+            );
           }
         },
         onError: (msg, _) => controller.addError(msg),
@@ -273,16 +275,17 @@ class ConvexService {
   // ─── Podcasts ─────────────────────────────────────────────────────────────
 
   Future<List<Podcast>> listSavedPodcastShows(String convexUserId) async {
-    final result = await _client.query(
-      'podcasts:listShows',
-      {'userId': convexUserId},
-    );
+    final result = await _client.query('podcasts:listShows', {
+      'userId': convexUserId,
+    });
     final list = _decodeList(result);
     return list
-        .map((item) => Podcast.fromJson(
-              (item as Map<String, dynamic>)['podcastPayload']
-                  as Map<String, dynamic>,
-            ))
+        .map(
+          (item) => Podcast.fromJson(
+            (item as Map<String, dynamic>)['podcastPayload']
+                as Map<String, dynamic>,
+          ),
+        )
         .toList();
   }
 
@@ -314,19 +317,14 @@ class ConvexService {
 
   static Playlist _playlistFromConvex(Map<String, dynamic> json) {
     final rawTracks = json['tracks'] as List<dynamic>? ?? [];
-    final tracks = rawTracks
-        .map((t) {
-          final track = t as Map<String, dynamic>;
-          return PlaylistTrackItem(
-            id: track['_id'] as String,
-            position: (track['position'] as num).toInt(),
-            track: Track.fromJson(
-              track['trackPayload'] as Map<String, dynamic>,
-            ),
-          );
-        })
-        .toList()
-      ..sort((a, b) => a.position.compareTo(b.position));
+    final tracks = rawTracks.map((t) {
+      final track = t as Map<String, dynamic>;
+      return PlaylistTrackItem(
+        id: track['_id'] as String,
+        position: (track['position'] as num).toInt(),
+        track: Track.fromJson(track['trackPayload'] as Map<String, dynamic>),
+      );
+    }).toList()..sort((a, b) => a.position.compareTo(b.position));
 
     return Playlist(
       id: json['_id'] as String,

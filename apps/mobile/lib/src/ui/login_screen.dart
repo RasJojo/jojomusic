@@ -14,9 +14,9 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
-  final _nameController = TextEditingController(text: 'Jojo');
-  final _emailController = TextEditingController(text: 'jojo@example.com');
-  final _passwordController = TextEditingController(text: 'jojo1234');
+  final _nameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _registerMode = false;
 
   @override
@@ -32,7 +32,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (message.contains('Invalid credentials')) {
       return 'Email ou mot de passe incorrect. Réessayez.';
     }
-    if (message.contains('Connection refused') || message.contains('Failed host lookup')) {
+    if (message.contains('Connection refused') ||
+        message.contains('Failed host lookup')) {
       return 'Impossible de se connecter au serveur. Vérifiez votre connexion internet.';
     }
     if (message.contains('Timeout')) {
@@ -95,12 +96,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       padding: const EdgeInsets.all(28),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(36),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF153B33), Color(0xFF0B1819)],
-        ),
-        border: Border.all(color: const Color(0x1FFFFFFF)),
+        color: Colors.white.withValues(alpha: 0.07),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -118,24 +115,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               child: JojoLogo(size: 40, borderRadius: 14),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
           Text('JojoMusique', style: Theme.of(context).textTheme.displaySmall),
-          const SizedBox(height: 14),
-          Text(
-            'Compte perso, historique perso, reco perso. Une interface plus dense, plus lisible, et pensée pour la lecture immédiate.',
-            style: Theme.of(context).textTheme.bodyLarge,
-          ),
-          const SizedBox(height: 24),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: const [
-              _HeroPill(label: 'Streaming'),
-              _HeroPill(label: 'Playlists'),
-              _HeroPill(label: 'Hors-ligne'),
-              _HeroPill(label: 'Paroles'),
-            ],
-          ),
         ],
       ),
     );
@@ -151,13 +132,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           Text(
             _registerMode ? 'Créer un compte' : 'Se connecter',
             style: Theme.of(context).textTheme.headlineSmall,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _registerMode
-                ? 'Chaque compte garde son historique, ses playlists et sa recommandation.'
-                : 'Reprends tes playlists, tes favoris et ta session locale.',
-            style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 22),
           if (_registerMode) ...[
@@ -216,31 +190,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             ),
           ],
         ],
-      ),
-    );
-  }
-}
-
-class _HeroPill extends StatelessWidget {
-  const _HeroPill({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(999),
-        color: const Color(0x660D1717),
-        border: Border.all(color: const Color(0x1FFFFFFF)),
-      ),
-      child: Text(
-        label,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-          color: JojoColors.mutedStrong,
-          fontWeight: FontWeight.w800,
-        ),
       ),
     );
   }

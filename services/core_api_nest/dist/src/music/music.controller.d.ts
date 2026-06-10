@@ -10,6 +10,9 @@ export declare class MusicController {
     browseCategory(categoryId: string): Promise<import("../common/payloads").BrowseCategoryResponse>;
     podcastsSearch(query: PodcastSearchDto): Promise<import("../common/payloads").PodcastPayload[]>;
     podcastDetails(podcastKey: string): Promise<import("../common/payloads").PodcastDetailsResponse>;
+    trackArtwork(query: LyricsDto): Promise<{
+        artwork_url: string | null;
+    }>;
     lyrics(query: LyricsDto): Promise<import("../common/payloads").LyricsResponse | null>;
     resolveTrack(payload: ResolveTrackRequestDto): Promise<import("../common/payloads").ResolvedStream>;
     similarTracks(payload: SimilarTracksRequestDto): Promise<import("../common/payloads").TrackPayload[]>;

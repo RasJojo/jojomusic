@@ -471,15 +471,30 @@ class ITunesProvider:
         return exact_matches[:limit]
 
     async def lyrics(self, artist: str, title: str) -> LyricsResponse | None:
-        genius = await self._lyrics_from_genius(artist=artist, title=title)
-        if genius is not None:
+        lrclib_task = asyncio.ensure_future(
+            self._lyrics_from_lrclib(artist=artist, title=title)
+        )
+        genius_task = asyncio.ensure_future(
+            self._lyrics_from_genius(artist=artist, title=title)
+        )
+        tononkira_task = asyncio.ensure_future(
+            self._lyrics_from_tononkira(artist=artist, title=title)
+        )
+        results = await asyncio.gather(
+            lrclib_task, genius_task, tononkira_task, return_exceptions=True
+        )
+        lrclib = results[0] if not isinstance(results[0], Exception) else None
+        genius = results[1] if not isinstance(results[1], Exception) else None
+        tononkira = results[2] if not isinstance(results[2], Exception) else None
+
+        # Synced lyrics first (LrcLib), then plain (Genius → Tononkira → LrcLib plain)
+        if lrclib and lrclib.synced_lyrics:
+            return lrclib
+        if genius:
             return genius
-
-        tononkira = await self._lyrics_from_tononkira(artist=artist, title=title)
-        if tononkira is not None:
+        if tononkira:
             return tononkira
-
-        return await self._lyrics_from_lrclib(artist=artist, title=title)
+        return lrclib
 
     async def _lyrics_from_genius(
         self,
@@ -493,8 +508,8 @@ class ITunesProvider:
         def lookup() -> LyricsResponse | None:
             client = lyricsgenius.Genius(
                 settings.genius_access_token,
-                timeout=12,
-                retries=1,
+                timeout=5,
+                retries=0,
                 sleep_time=0.1,
                 remove_section_headers=True,
                 skip_non_songs=True,
@@ -546,7 +561,7 @@ class ITunesProvider:
         title: str,
     ) -> LyricsResponse | None:
         try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
                 best_payload: tuple[tuple[int, int, int], LyricsResponse] | None = None
 
                 for url in self._tononkira_candidate_urls(artist=artist, title=title):

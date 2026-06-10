@@ -42,6 +42,9 @@ let MusicController = class MusicController {
     podcastDetails(podcastKey) {
         return this.musicService.podcastDetails(podcastKey);
     }
+    trackArtwork(query) {
+        return this.musicService.trackArtwork(query.artist, query.title);
+    }
     lyrics(query) {
         return this.musicService.lyrics(query.artist, query.title);
     }
@@ -101,6 +104,13 @@ __decorate([
     __metadata("design:paramtypes", [String]),
     __metadata("design:returntype", void 0)
 ], MusicController.prototype, "podcastDetails", null);
+__decorate([
+    (0, common_1.Get)('tracks/artwork'),
+    __param(0, (0, common_1.Query)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [music_dto_1.LyricsDto]),
+    __metadata("design:returntype", void 0)
+], MusicController.prototype, "trackArtwork", null);
 __decorate([
     (0, common_1.Get)('lyrics'),
     __param(0, (0, common_1.Query)()),

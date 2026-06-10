@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../data/convex_service.dart';
 import '../models/app_models.dart';
 import 'providers.dart';
 
@@ -37,9 +36,8 @@ class SessionController extends AsyncNotifier<AuthSession?> {
       final session = await ref
           .read(baseApiProvider)
           .login(email: email, password: password);
-      final withConvex = await _upsertConvexUser(session);
-      await _persistSession(withConvex);
-      return withConvex;
+      await _persistSession(session);
+      return session;
     });
   }
 
@@ -53,9 +51,8 @@ class SessionController extends AsyncNotifier<AuthSession?> {
       final session = await ref
           .read(baseApiProvider)
           .register(name: name, email: email, password: password);
-      final withConvex = await _upsertConvexUser(session);
-      await _persistSession(withConvex);
-      return withConvex;
+      await _persistSession(session);
+      return session;
     });
   }
 
@@ -70,21 +67,6 @@ class SessionController extends AsyncNotifier<AuthSession?> {
         .setString(_sessionStorageKey, jsonEncode(session.toJson()));
   }
 
-  /// Upsert l'utilisateur dans Convex et retourne la session enrichie du convexUserId.
-  Future<AuthSession> _upsertConvexUser(AuthSession session) async {
-    try {
-      final convexId = await ConvexService.instance.upsertUser(
-        externalId: session.user.id,
-        name: session.user.name,
-        email: session.user.email,
-      );
-      return session.withConvexUserId(convexId);
-    } catch (_) {
-      // Ne pas bloquer le login si Convex est indisponible
-      return session;
-    }
-  }
-
   Future<void> _validateStoredSession(AuthSession session) async {
     final preferences = ref.read(sharedPreferencesProvider);
     try {
@@ -94,15 +76,12 @@ class SessionController extends AsyncNotifier<AuthSession?> {
           .fetchCurrentUser()
           .timeout(_sessionValidationTimeout);
 
-      // Garantir que convexUserId est présent (migration sessions anciennes)
-      var validated = AuthSession(
+      // user.id est le Convex _id retourné par /auth/me
+      final validated = AuthSession(
         accessToken: session.accessToken,
         user: user,
-        convexUserId: session.convexUserId,
+        convexUserId: session.convexUserId ?? user.id,
       );
-      if (validated.convexUserId == null) {
-        validated = await _upsertConvexUser(validated);
-      }
       await _persistSession(validated);
       if (!ref.mounted) {
         return;

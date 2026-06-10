@@ -25,6 +25,8 @@ class DownloadsController {
   const DownloadsController(this.ref);
 
   final Ref ref;
+  static const _downloadRetryCount = 3;
+  static const _betweenTrackDelay = Duration(milliseconds: 850);
 
   Future<void> togglePlaylistDownload({
     required Playlist playlist,
@@ -65,14 +67,9 @@ class DownloadsController {
       playlists: currentPlaylists,
       likes: currentLikes,
     );
-    final validPlaylistIds = currentPlaylists
-        .map((playlist) => playlist.id)
-        .toSet()
-      ..addAll(
-        libraryPlaylists
-        .map((playlist) => playlist.id)
-        .toSet(),
-      );
+    final validPlaylistIds =
+        currentPlaylists.map((playlist) => playlist.id).toSet()
+          ..addAll(libraryPlaylists.map((playlist) => playlist.id).toSet());
     await database.pruneOfflinePlaylists(validPlaylistIds);
     final downloadedPlaylistIds = await database.getDownloadedPlaylistIds();
 
@@ -168,7 +165,8 @@ class DownloadsController {
         continue;
       }
 
-      await _downloadTrack(track: track, outputPath: filePath);
+      await _downloadTrackWithRetries(track: track, outputPath: filePath);
+      await Future<void>.delayed(_betweenTrackDelay);
     }
 
     for (final existing in existingTracks) {
@@ -196,7 +194,9 @@ class DownloadsController {
         name: 'Favoris',
         description: 'Tous les titres que tu as likés.',
         artworkUrl: likes.first.displayArtworkUrl,
-        tracks: likes.asMap().entries
+        tracks: likes
+            .asMap()
+            .entries
             .map(
               (entry) => PlaylistTrackItem(
                 id: 'favorite:${entry.value.trackKey}',
@@ -235,7 +235,14 @@ class DownloadsController {
 
     try {
       final resolved = await api.resolveTrack(track);
-      await Dio().download(
+      final dio = Dio(
+        BaseOptions(
+          connectTimeout: const Duration(seconds: 25),
+          receiveTimeout: const Duration(minutes: 10),
+          sendTimeout: const Duration(seconds: 25),
+        ),
+      );
+      await dio.download(
         resolved.streamUrl,
         normalizedPath,
         onReceiveProgress: (received, total) async {
@@ -274,6 +281,12 @@ class DownloadsController {
         ),
       );
     } catch (_) {
+      try {
+        final partial = File(normalizedPath);
+        if (await partial.exists()) {
+          await partial.delete();
+        }
+      } catch (_) {}
       await database.upsertOfflineTrack(
         OfflineTracksCompanion.insert(
           trackKey: track.trackKey,
@@ -288,7 +301,24 @@ class DownloadsController {
           updatedAt: DateTime.now(),
         ),
       );
-      rethrow;
+    }
+  }
+
+  Future<void> _downloadTrackWithRetries({
+    required Track track,
+    required String outputPath,
+  }) async {
+    for (var attempt = 1; attempt <= _downloadRetryCount; attempt++) {
+      await _downloadTrack(track: track, outputPath: outputPath);
+      final current = await ref
+          .read(appDatabaseProvider)
+          .findOfflineTrack(track.trackKey);
+      if (current?.status == 'downloaded') {
+        return;
+      }
+      if (attempt < _downloadRetryCount) {
+        await Future<void>.delayed(Duration(seconds: attempt * 2));
+      }
     }
   }
 
@@ -302,4 +332,5 @@ class DownloadsController {
     return '$filePath.m4a';
   }
 }
+
 // Downloads

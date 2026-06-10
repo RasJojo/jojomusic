@@ -1,0 +1,59 @@
+services:
+  jojomusic-tor:
+    image: dperson/torproxy
+    container_name: jojomusic-tor
+    restart: unless-stopped
+    networks:
+      - internal
+
+  resolver-api:
+    image: jojomusic-resolver:latest
+    container_name: jojomusic-resolver
+    restart: unless-stopped
+    environment:
+      RESOLVER_TIMEOUT_SECONDS: 25
+    volumes:
+      - ./cookies.txt:/app/cookies.txt:ro
+    networks:
+      - internal
+
+  media-worker:
+    image: jojomusic-worker:latest
+    container_name: jojomusic-worker
+    restart: unless-stopped
+    environment:
+      CONVEX_URL: https://convex.jojoserv.com
+      CONVEX_ADMIN_KEY: convex-self-hosted|0109ec82a1c77dc4ed33ecc93393d6ae855c5b4cd66e3ed4f14fb68755964e38efa7723782
+      MEDIA_CACHE_DIR: /data/audio_cache
+      IMAGE_CACHE_DIR: /data/image_cache
+      POLL_INTERVAL_SECONDS: 3
+    depends_on:
+      jojomusic-tor:
+        condition: service_started
+    volumes:
+      - audio_cache:/data/audio_cache
+      - image_cache:/data/image_cache
+      - ./cookies.txt:/app/cookies.txt:ro
+    networks:
+      - internal
+
+  jojomusic-media:
+    image: nginx:alpine
+    container_name: jojomusic-media
+    restart: unless-stopped
+    volumes:
+      - ./services/media_nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - audio_cache:/data/audio_cache:ro
+      - image_cache:/data/image_cache:ro
+    networks:
+      - caddy
+
+volumes:
+  audio_cache:
+  image_cache:
+
+networks:
+  internal:
+    driver: bridge
+  caddy:
+    external: true

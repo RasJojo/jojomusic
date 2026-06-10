@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .venv/
+node_modules/
 __pycache__/
 .pytest_cache/
 .mypy_cache/
@@ -18,3 +19,8 @@ apps/landing/downloads/*.apk
 
 services/core_api/.venv/
 services/resolver_api/.venv/
+
+# App Store Connect API credentials
+.asc_credentials
+
+.env.local

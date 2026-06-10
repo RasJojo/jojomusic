@@ -13,7 +13,9 @@ class QueueScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final queue = ref.watch(currentQueueProvider);
-    final playback = ref.watch(playbackStateProvider);
+    final currentIndex = ref.watch(
+      playbackStateProvider.select((s) => s.asData?.value.queueIndex ?? 0),
+    );
 
     return ShellChrome(
       topColor: const Color(0xFF173638),
@@ -21,12 +23,11 @@ class QueueScreen extends ConsumerWidget {
       onProfilePressed: () => openProfileScreen(context),
       child: queue.when(
         data: (items) {
-          final currentIndex = playback.asData?.value.queueIndex ?? 0;
           return ListView(
             padding: const EdgeInsets.fromLTRB(18, 16, 18, 148),
             children: [
               JojoPageHeader(
-                title: 'File d’attente',
+                title: "File d'attente",
                 subtitle: 'La lecture continue avec des titres similaires.',
                 leading: JojoIconButton(
                   icon: Icons.arrow_back_rounded,
@@ -54,7 +55,7 @@ class QueueScreen extends ConsumerWidget {
                       child: Text(
                         items.isEmpty
                             ? 'Aucun morceau dans la file pour le moment.'
-                            : '${items.length} titres alignés. Les derniers morceaux ajoutent automatiquement une suite proche de ce que tu écoutes.',
+                            : '${items.length} titres alignés. Glisse pour réorganiser.',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ),
@@ -68,27 +69,56 @@ class QueueScreen extends ConsumerWidget {
                   children: [
                     const JojoSectionHeading(
                       title: 'Lecture suivante',
-                      subtitle: 'Sélectionne un titre pour sauter directement.',
+                      subtitle: 'Glisse pour réorganiser, tap pour sauter.',
                     ),
                     const SizedBox(height: 12),
                     if (items.isEmpty)
                       const JojoStateMessage(
                         icon: Icons.music_off_rounded,
-                        message: 'La file d’attente est vide.',
+                        message: "La file d'attente est vide.",
                       )
                     else
-                      ...items.asMap().entries.map(
-                        (entry) => Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: JojoQueueTile(
-                            item: entry.value,
-                            index: entry.key,
-                            isCurrent: entry.key == currentIndex,
-                            onTap: () => ref
-                                .read(playerControllerProvider)
-                                .playQueueItem(entry.key),
-                          ),
-                        ),
+                      ReorderableListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        buildDefaultDragHandles: false,
+                        onReorder: (oldIndex, newIndex) => ref
+                            .read(playerControllerProvider)
+                            .reorderQueue(oldIndex, newIndex),
+                        itemCount: items.length,
+                        itemBuilder: (context, index) {
+                          final item = items[index];
+                          final isCurrent = index == currentIndex;
+                          return Padding(
+                            key: ValueKey(item.id),
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: JojoQueueTile(
+                                    item: item,
+                                    index: index,
+                                    isCurrent: isCurrent,
+                                    onTap: () => ref
+                                        .read(playerControllerProvider)
+                                        .playQueueItem(index),
+                                  ),
+                                ),
+                                ReorderableDragStartListener(
+                                  index: index,
+                                  child: const Padding(
+                                    padding: EdgeInsets.only(left: 8),
+                                    child: Icon(
+                                      Icons.drag_handle_rounded,
+                                      color: JojoColors.muted,
+                                      size: 22,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
                       ),
                   ],
                 ),
@@ -98,9 +128,8 @@ class QueueScreen extends ConsumerWidget {
         },
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (error, stackTrace) =>
-            Center(child: Text('Erreur file d’attente: $error')),
+            Center(child: Text("Erreur file d'attente: $error")),
       ),
     );
   }
 }
-// Queue
