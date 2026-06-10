@@ -44,7 +44,11 @@ final connectivityStatusProvider = StreamProvider<bool>((ref) async* {
 
 final apiProvider = Provider<ApiService>((ref) {
   final session = ref.watch(sessionControllerProvider).asData?.value;
-  return ref.watch(baseApiProvider).withToken(session?.accessToken);
+  final api = ref.watch(baseApiProvider).withToken(session?.accessToken);
+  // Dispose the Dio client when the token changes so we don't leak HTTP
+  // connections across session refreshes.
+  ref.onDispose(api.dispose);
+  return api;
 });
 
 final convexServiceProvider = Provider<ConvexService>((ref) {

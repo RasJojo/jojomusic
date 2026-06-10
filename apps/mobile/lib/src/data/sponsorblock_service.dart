@@ -41,12 +41,13 @@ class SponsorBlockService {
       return list.map((item) {
         final map = item as Map<String, dynamic>;
         final segment = (map['segment'] as List<dynamic>).cast<num>();
+        if (segment.length < 2) return null;
         return SponsorSegment(
           start: Duration(milliseconds: (segment[0].toDouble() * 1000).round()),
           end: Duration(milliseconds: (segment[1].toDouble() * 1000).round()),
           category: map['category'] as String? ?? 'sponsor',
         );
-      }).toList();
+      }).whereType<SponsorSegment>().toList();
     } catch (_) {
       return const [];
     }

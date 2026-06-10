@@ -1374,9 +1374,13 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     for (final seg in _currentSegments) {
       if (seg.contains(position)) {
         _isSkippingSegment = true;
-        unawaited(
-          _player.seek(seg.end).then((_) => _isSkippingSegment = false),
-        );
+        unawaited(() async {
+          try {
+            await _player.seek(seg.end);
+          } finally {
+            _isSkippingSegment = false;
+          }
+        }());
         return;
       }
     }

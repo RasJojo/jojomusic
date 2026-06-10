@@ -36,17 +36,20 @@ class ApiService {
   }
 
   Future<bool> pingHealth() async {
+    final dio = Dio(
+      BaseOptions(
+        baseUrl: _environment.convexSiteUrl,
+        connectTimeout: const Duration(seconds: 2),
+        receiveTimeout: const Duration(seconds: 2),
+      ),
+    );
     try {
-      final response = await Dio(
-        BaseOptions(
-          baseUrl: _environment.convexSiteUrl,
-          connectTimeout: const Duration(seconds: 2),
-          receiveTimeout: const Duration(seconds: 2),
-        ),
-      ).get<Map<String, dynamic>>('/health');
+      final response = await dio.get<Map<String, dynamic>>('/health');
       return response.statusCode == 200;
     } catch (_) {
       return false;
+    } finally {
+      dio.close(force: true);
     }
   }
 
