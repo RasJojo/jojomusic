@@ -38,21 +38,6 @@ ResolvedStream _fakeStream(Track t) => ResolvedStream(
 
 void _resolverTests() {
   group('LocalStreamResolver', () {
-    test('extrait un identifiant YouTube depuis une URL complète', () {
-      expect(
-        extractYoutubeVideoId('https://www.youtube.com/watch?v=dQw4w9WgXcQ'),
-        'dQw4w9WgXcQ',
-      );
-      expect(
-        extractYoutubeVideoId('https://youtu.be/dQw4w9WgXcQ'),
-        'dQw4w9WgXcQ',
-      );
-      expect(
-        extractYoutubeVideoId('https://example.com/watch?v=dQw4w9WgXcQ'),
-        isNull,
-      );
-    });
-
     test('renvoie le résultat du backend', () async {
       final resolver = LocalStreamResolver(
         backendOverride: (t) async => _fakeStream(t),

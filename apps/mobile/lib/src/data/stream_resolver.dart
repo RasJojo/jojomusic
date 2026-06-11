@@ -3,28 +3,6 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 import '../models/app_models.dart';
 
-final _youtubeVideoIdRe = RegExp(r'^[a-zA-Z0-9_-]{11}$');
-
-@visibleForTesting
-String? extractYoutubeVideoId(String value) {
-  final trimmed = value.trim();
-  if (_youtubeVideoIdRe.hasMatch(trimmed)) return trimmed;
-
-  final uri = Uri.tryParse(trimmed);
-  if (uri == null) return null;
-  if (uri.host.contains('youtu.be')) {
-    final id = uri.pathSegments.isEmpty ? null : uri.pathSegments.first;
-    return id != null && _youtubeVideoIdRe.hasMatch(id) ? id : null;
-  }
-  if (!uri.host.contains('youtube.com')) return null;
-  final watchId = uri.queryParameters['v'];
-  if (watchId != null && _youtubeVideoIdRe.hasMatch(watchId)) return watchId;
-  for (final segment in uri.pathSegments.reversed) {
-    if (_youtubeVideoIdRe.hasMatch(segment)) return segment;
-  }
-  return null;
-}
-
 class LocalStreamResolver {
   LocalStreamResolver({
     @visibleForTesting Future<ResolvedStream> Function(Track)? backendOverride,
@@ -36,6 +14,7 @@ class LocalStreamResolver {
   final Map<String, _CachedStream> _cache = {};
   final Map<String, Future<ResolvedStream>> _inFlight = {};
 
+  static final _videoIdRe = RegExp(r'^[a-zA-Z0-9_-]{11}$');
   static const _cacheDuration = Duration(hours: 5, minutes: 30);
 
   Future<ResolvedStream> resolve(Track track) async {
@@ -66,9 +45,7 @@ class LocalStreamResolver {
   Future<ResolvedStream> _doResolve(Track track) async {
     final videoId = _extractVideoId(track) ?? await _searchVideoId(track);
     if (videoId == null) {
-      throw Exception(
-        'Aucun identifiant vidéo trouvé pour : ${track.artist} — ${track.title}',
-      );
+      throw Exception('Aucun identifiant vidéo trouvé pour : ${track.artist} — ${track.title}');
     }
 
     StreamManifest manifest;
@@ -79,12 +56,10 @@ class LocalStreamResolver {
     }
 
     // mp4/aac en priorité — opus/webm rejeté par AVPlayer iOS
-    final mp4Streams =
-        manifest.audioOnly.where((s) => s.container.name == 'mp4').toList()
-          ..sort(
-            (a, b) =>
-                b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond),
-          );
+    final mp4Streams = manifest.audioOnly
+        .where((s) => s.container.name == 'mp4')
+        .toList()
+      ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
 
     final String streamUrl;
     if (mp4Streams.isNotEmpty) {
@@ -111,13 +86,12 @@ class LocalStreamResolver {
 
   String? _extractVideoId(Track track) {
     final externalId = track.externalId;
-    final fromExternalId = externalId == null
-        ? null
-        : extractYoutubeVideoId(externalId);
-    if (fromExternalId != null) return fromExternalId;
-
-    final fromTrackKey = extractYoutubeVideoId(track.trackKey);
-    if (fromTrackKey != null) return fromTrackKey;
+    if (externalId != null && _videoIdRe.hasMatch(externalId)) {
+      return externalId;
+    }
+    if (_videoIdRe.hasMatch(track.trackKey)) {
+      return track.trackKey;
+    }
     return null;
   }
 

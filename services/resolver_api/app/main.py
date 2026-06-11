@@ -22,43 +22,23 @@ logger = logging.getLogger("jojomusic.resolver")
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     resolver_timeout_seconds: int = 25
-    piped_instances: str = ""
-    tor_proxy: str | None = None
-    youtube_pot_provider_url: str | None = None
+    piped_instances: str = "pipedapi.kavin.rocks,pipedapi.adminforge.de,pipedapi.in.projectsegfau.lt"
 
 
 settings = Settings()
 app = FastAPI(title="JojoMusic Resolver API", version="0.2.0")
 
 COOKIES_PATH = Path("/tmp/cookies.txt")
-COOKIE_SOURCE_PATH = Path("/app/cookies.txt")
-YOUTUBE_PLAYER_CLIENTS = ["mweb", "web_safari", "web", "android", "ios"]
-
-
-def _has_cookie_source() -> bool:
-    return COOKIE_SOURCE_PATH.exists() and COOKIE_SOURCE_PATH.stat().st_size > 0
 
 
 def _ensure_cookies() -> str | None:
-    """Copy validated cookies from the read-only mount to /tmp, return path or None."""
-    if _has_cookie_source():
+    """Copy fresh cookies from the read-only mount to /tmp, return path or None."""
+    source = Path("/app/cookies.txt")
+    if source.exists():
         import shutil
-        shutil.copy2(COOKIE_SOURCE_PATH, COOKIES_PATH)
+        shutil.copy2(source, COOKIES_PATH)
         return str(COOKIES_PATH)
     return None
-
-
-def _youtube_extractor_args() -> dict:
-    args: dict = {
-        "youtube": {
-            "player_client": YOUTUBE_PLAYER_CLIENTS,
-        },
-    }
-    if settings.youtube_pot_provider_url:
-        args["youtubepot-bgutilhttp"] = {
-            "base_url": [settings.youtube_pot_provider_url.rstrip("/")],
-        }
-    return args
 PIPED_INSTANCES = [i.strip() for i in settings.piped_instances.split(",") if i.strip()]
 
 # ---------------------------------------------------------------------------
@@ -265,9 +245,6 @@ def _best_thumbnail(entry: dict) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _extract_video_id(url: str) -> str | None:
-    value = url.strip()
-    if re.fullmatch(r"[a-zA-Z0-9_-]{11}", value):
-        return value
     patterns = [
         r"(?:v=|/v/|youtu\.be/)([a-zA-Z0-9_-]{11})",
         r"/embed/([a-zA-Z0-9_-]{11})",
@@ -278,13 +255,6 @@ def _extract_video_id(url: str) -> str | None:
         if match:
             return match.group(1)
     return None
-
-
-def _youtube_url_from_query(query: str) -> str | None:
-    video_id = _extract_video_id(query)
-    if not video_id:
-        return None
-    return f"https://www.youtube.com/watch?v={video_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -302,8 +272,8 @@ def _fetch_json(url: str, timeout: int = 10) -> dict | None:
             if resp.status == 200:
                 import json
                 return json.loads(resp.read())
-    except Exception as exc:
-        logger.debug("Piped request failed url=%s error=%s", url, exc)
+    except Exception:
+        pass
     return None
 
 
@@ -413,7 +383,7 @@ def _piped_resolve(query: str) -> ResolveResponse | None:
 # yt-dlp helpers (fallback with cookies)
 # ---------------------------------------------------------------------------
 
-def _ydl_options(*, use_proxy: bool = False, use_cookies: bool = True, **overrides) -> dict:
+def _ydl_options(**overrides) -> dict:
     opts = {
         "quiet": True,
         "noplaylist": True,
@@ -422,13 +392,15 @@ def _ydl_options(*, use_proxy: bool = False, use_cookies: bool = True, **overrid
         "ignoreerrors": True,
         "cachedir": False,
         "remote_components": ["ejs:github"],
-        "extractor_args": _youtube_extractor_args(),
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "web"],
+            },
+        },
     }
-    if use_proxy and settings.tor_proxy:
-        opts["proxy"] = settings.tor_proxy
     # Only inject cookies for full extraction (stream resolve), not search
     use_flat = overrides.get("extract_flat", opts.get("extract_flat", True))
-    if use_cookies and not use_flat:
+    if not use_flat:
         cookie_path = _ensure_cookies()
         if cookie_path:
             opts["cookiefile"] = cookie_path
@@ -436,9 +408,9 @@ def _ydl_options(*, use_proxy: bool = False, use_cookies: bool = True, **overrid
     return opts
 
 
-def _find_best_video_url(query: str, *, use_proxy: bool = False) -> tuple[str, str, str | None, float | None, str | None]:
+def _find_best_video_url(query: str) -> tuple[str, str, str | None, float | None, str | None]:
     """Use flat search to find the best matching video URL."""
-    options = _ydl_options(use_proxy=use_proxy, use_cookies=False)
+    options = _ydl_options()
     all_entries: list[dict] = []
     with YoutubeDL(options) as ydl:
         for variant in _query_variants(query):
@@ -460,24 +432,11 @@ def _find_best_video_url(query: str, *, use_proxy: bool = False) -> tuple[str, s
     return video_url, title, artist, duration, thumbnail_url
 
 
-def _ytdlp_resolve(query: str, *, use_proxy: bool = False, use_cookies: bool = True) -> ResolveResponse:
+def _ytdlp_resolve(query: str) -> ResolveResponse:
     """Resolve stream via yt-dlp with cookies fallback."""
-    direct_video_url = _youtube_url_from_query(query)
-    if direct_video_url:
-        video_url = direct_video_url
-        title = query
-        artist = "YouTube"
-        search_duration = None
-        thumbnail_url = None
-    else:
-        video_url, title, artist, search_duration, thumbnail_url = _find_best_video_url(
-            query,
-            use_proxy=use_proxy,
-        )
+    video_url, title, artist, search_duration, thumbnail_url = _find_best_video_url(query)
 
     options = _ydl_options(
-        use_proxy=use_proxy,
-        use_cookies=use_cookies,
         extract_flat=False,
         format="bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio[acodec^=mp4a]/bestaudio/best",
     )
@@ -520,25 +479,9 @@ def extract_stream(query: str) -> ResolveResponse:
     except Exception as exc:
         logger.warning("Piped resolve failed: %s", exc)
 
-    errors: list[Exception] = []
-    if _has_cookie_source():
-        try:
-            logger.info("Piped failed, trying yt-dlp with cookies for: %s", query)
-            return _ytdlp_resolve(query, use_cookies=True)
-        except Exception as exc:
-            errors.append(exc)
-            logger.warning("yt-dlp cookie resolve failed: %s", exc)
-
-    if not _has_cookie_source():
-        logger.warning("No validated YouTube cookies; skipping yt-dlp resolve for: %s", query)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="YOUTUBE_COOKIES_NOT_READY",
-        )
-
-    if errors:
-        raise errors[-1]
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No resolver path available")
+    # Fallback to yt-dlp with cookies
+    logger.info("Piped failed, falling back to yt-dlp for: %s", query)
+    return _ytdlp_resolve(query)
 
 
 # ---------------------------------------------------------------------------
@@ -586,9 +529,7 @@ def search_candidates(query: str, limit: int) -> SearchResponse:
 def health() -> dict:
     return {
         "status": "ok",
-        "cookies_loaded": _has_cookie_source(),
-        "pot_provider_configured": bool(settings.youtube_pot_provider_url),
-        "pot_provider_url": settings.youtube_pot_provider_url,
+        "cookies_loaded": COOKIES_PATH.exists(),
         "piped_instances": PIPED_INSTANCES,
     }
 

@@ -17,7 +17,7 @@ class PodcastScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final details = ref.watch(podcastDetailsProvider(podcast));
+    final details = ref.watch(podcastDetailsProvider(podcast.podcastKey));
     final library = ref.watch(libraryControllerProvider).asData?.value;
 
     return ShellChrome(

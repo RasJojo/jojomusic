@@ -12,9 +12,9 @@ final browseCategoryProvider =
       return ref.watch(apiProvider).fetchBrowseCategory(categoryId);
     });
 
-final podcastDetailsProvider = FutureProvider.family<PodcastDetails, Podcast>((
+final podcastDetailsProvider = FutureProvider.family<PodcastDetails, String>((
   ref,
-  podcast,
+  podcastKey,
 ) {
-  return ref.watch(apiProvider).fetchPodcastDetails(podcast);
+  return ref.watch(apiProvider).fetchPodcastDetails(podcastKey);
 });

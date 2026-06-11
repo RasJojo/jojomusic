@@ -163,7 +163,7 @@ class Track {
     album: json['album'] as String?,
     artworkUrl: json['artwork_url'] as String?,
     artistImageUrl: json['artist_image_url'] as String?,
-    durationMs: (json['duration_ms'] as num?)?.toInt(),
+    durationMs: json['duration_ms'] as int?,
     provider: (json['provider'] as String?) ?? 'internal',
     externalId: json['external_id'] as String?,
     previewUrl: json['preview_url'] as String?,
@@ -325,7 +325,7 @@ class Podcast {
     artworkUrl: json['artwork_url'] as String?,
     feedUrl: json['feed_url'] as String?,
     externalUrl: json['external_url'] as String?,
-    episodeCount: (json['episode_count'] as num?)?.toInt(),
+    episodeCount: json['episode_count'] as int?,
     releaseDate: json['release_date'] == null
         ? null
         : DateTime.tryParse(json['release_date'] as String),
@@ -596,7 +596,7 @@ class ResolvedStream {
     source: json['source'] as String?,
     webpageUrl: json['webpage_url'] as String?,
     thumbnailUrl: json['thumbnail_url'] as String?,
-    durationMs: (json['duration_ms'] as num?)?.toInt(),
+    durationMs: json['duration_ms'] as int?,
   );
 }
 

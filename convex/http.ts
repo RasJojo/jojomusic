@@ -153,7 +153,7 @@ http.route({
 http.route({
   pathPrefix: "/podcasts/", method: "GET",
   handler: httpAction(async (ctx, request) => {
-    const podcastKey = decodeURIComponent(new URL(request.url).pathname.replace("/podcasts/", ""));
+    const podcastKey = new URL(request.url).pathname.replace("/podcasts/", "");
     if (!podcastKey) return json({ error: "podcastKey requis" }, 400);
     try {
       return json(await ctx.runAction(internal.musicContent.podcastDetails, { podcastKey }));
@@ -199,7 +199,7 @@ http.route({
     const body = await request.json().catch(() => null) as Record<string, unknown> | null;
     if (!body) return json({ error: "Body requis" }, 400);
     try {
-      const result = await ctx.runAction(internal.musicContent.resolveTrack, { track: body.track, query: body.query as string | undefined, artist: body.artist as string | undefined, title: body.title as string | undefined, allowPreview: body.allow_preview as boolean | undefined });
+      const result = await ctx.runAction(internal.musicContent.resolveTrack, { track: body.track, query: body.query as string | undefined, artist: body.artist as string | undefined, title: body.title as string | undefined });
       return json(result);
     } catch (e) {
       return json({ error: String(e) }, e instanceof Error && e.message === "MISSING_QUERY" ? 400 : 503);
@@ -345,7 +345,7 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     const user = await requireUser(ctx, request);
     if (user instanceof Response) return user;
-    const podcastKey = decodeURIComponent(new URL(request.url).pathname.replace("/me/podcasts/", ""));
+    const podcastKey = new URL(request.url).pathname.replace("/me/podcasts/", "");
     await ctx.runMutation(api.podcasts.unsaveShow, { userId: user.id as never, podcastKey });
     return new Response(null, { status: 204 });
   }),

@@ -634,43 +634,37 @@ class YtMusicClient {
         _nav<Map>(data, ['header', 'musicImmersiveHeaderRenderer'])
             as Map<String, dynamic>? ??
         _nav<Map>(data, ['header', 'musicVisualHeaderRenderer'])
-            as Map<String, dynamic>? ??
-        _nav<Map>(data, ['header', 'musicHeaderRenderer'])
             as Map<String, dynamic>?;
+    if (header == null) return null;
 
-    final nameRuns = header != null ? _nav<List>(header, ['title', 'runs']) : null;
+    final nameRuns = _nav<List>(header, ['title', 'runs']);
     final name = _text(nameRuns) ?? 'Unknown Artist';
 
-    final descRuns =
-        (header != null ? _nav<List>(header, ['description', 'runs']) : null) ??
-        [];
+    final descRuns = _nav<List>(header, ['description', 'runs']) ?? [];
     final description = _text(descRuns);
 
-    final subRuns = header != null
-        ? _nav<List>(header, [
-            'subscriptionButton',
-            'subscribeButtonRenderer',
-            'longSubscriberCountText',
-            'runs',
-          ])
-        : null;
+    final subRuns = _nav<List>(header, [
+      'subscriptionButton',
+      'subscribeButtonRenderer',
+      'longSubscriberCountText',
+      'runs',
+    ]);
     final subscribers = _text(subRuns);
 
     // Artist image
-    final thumbs = header != null
-        ? (_nav<List>(header, [
-              'thumbnail',
-              'musicThumbnailRenderer',
-              'thumbnail',
-              'thumbnails',
-            ]) ??
-            _nav<List>(header, [
-              'foregroundThumbnail',
-              'musicThumbnailRenderer',
-              'thumbnail',
-              'thumbnails',
-            ]))
-        : null;
+    final thumbs =
+        _nav<List>(header, [
+          'thumbnail',
+          'musicThumbnailRenderer',
+          'thumbnail',
+          'thumbnails',
+        ]) ??
+        _nav<List>(header, [
+          'foregroundThumbnail',
+          'musicThumbnailRenderer',
+          'thumbnail',
+          'thumbnails',
+        ]);
     final imageUrl = thumbs != null && thumbs.isNotEmpty
         ? _thumbUrl(thumbs.last)
         : null;
@@ -754,9 +748,6 @@ class YtMusicClient {
         }
       }
     }
-
-    // If no header AND nothing parseable from content, the response is unusable.
-    if (header == null && songs.isEmpty && albums.isEmpty) return null;
 
     return YtArtistDetail(
       name: name,
