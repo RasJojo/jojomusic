@@ -676,7 +676,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   Future<void> _prepareNativeUpcoming(int index, int loadGeneration) async {
     final targetIndex = (index + 3).clamp(0, _queueTracks.length - 1);
     if (targetIndex <= _nativeQueuePreparedUntil) {
-      if (_autoplayEnabled && _queueTracks.length - index <= 3) {
+      if (_autoplayEnabled && index >= 0 && index < _queueTracks.length && _queueTracks.length - index <= 3) {
         unawaited(_ensureAutoplayTail(seed: _queueTracks[index]));
       }
       return;
@@ -700,7 +700,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       } catch (_) {}
     }
 
-    if (_autoplayEnabled && _queueTracks.length - index <= 3) {
+    if (_autoplayEnabled && index >= 0 && index < _queueTracks.length && _queueTracks.length - index <= 3) {
       await _ensureAutoplayTail(seed: _queueTracks[index]);
       if (loadGeneration == _loadGeneration &&
           _queueTracks.length - 1 > _nativeQueuePreparedUntil) {
@@ -877,7 +877,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         unawaited(_resolveTrack(_queueTracks[nextIndex]));
       }
     }
-    if (_autoplayEnabled && _queueTracks.length - index <= 3) {
+    if (_autoplayEnabled && index >= 0 && index < _queueTracks.length && _queueTracks.length - index <= 3) {
       unawaited(_ensureAutoplayTail(seed: _queueTracks[index]));
     }
   }
