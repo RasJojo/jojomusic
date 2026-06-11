@@ -468,7 +468,9 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       if (loadGeneration != _loadGeneration) return;
       _nativeQueueBaseIndex = index;
       _nativeQueuePreparedUntil = index;
-      mediaItem.add(_toMediaItem(_queueTracks[index], index: index));
+      final newMediaItem = _toMediaItem(_queueTracks[index], index: index);
+      queue.add(_buildQueueMediaItems());
+      mediaItem.add(newMediaItem);
       _broadcastState(_player.playerState);
       unawaited(preloadLyricsForTrack(track));
       unawaited(_prepareNativeUpcoming(index, loadGeneration));
@@ -488,6 +490,12 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       if (!_pauseRequestedManually) {
         if (_crossfadeEnabled) _startFadeIn();
         await _player.play();
+      }
+      // Re-emit mediaItem after play() so audio_service pushes metadata to iOS
+      // Now Playing while the session is active (playing: true). Without this,
+      // iOS may ignore the metadata update that happened during loading state.
+      if (loadGeneration == _loadGeneration) {
+        mediaItem.add(newMediaItem);
       }
       _broadcastState(_player.playerState);
     } finally {
