@@ -93,6 +93,15 @@ class LibraryController extends AsyncNotifier<LibraryState> {
 
   @override
   Future<LibraryState> build() async {
+    // Listen to session changes so the library refreshes when convexUserId
+    // becomes available after _validateStoredSession completes asynchronously.
+    ref.listen(sessionControllerProvider, (previous, next) {
+      final prevId = previous?.asData?.value?.convexUserId;
+      final nextId = next.asData?.value?.convexUserId;
+      if (nextId != null && nextId != prevId) {
+        unawaited(_refreshInBackground());
+      }
+    });
     final cached = await _restoreCachedLibrary();
     if (cached != null) {
       unawaited(_refreshInBackground());

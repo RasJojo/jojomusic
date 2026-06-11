@@ -967,6 +967,12 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
           await _loadAt(candidateIndex);
           return;
         } catch (_) {
+          // _loadAt increments _completionCallToken once at its start.
+          // If it changed by exactly 1, that was our own call — stay in sync
+          // so the next attempt's token check doesn't abort prematurely.
+          // If it changed by more, an external action (manual skip) fired — abort.
+          if (_completionCallToken > token + 1) return;
+          token = _completionCallToken;
           continue;
         }
       }
