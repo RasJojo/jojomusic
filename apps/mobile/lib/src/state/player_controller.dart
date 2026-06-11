@@ -124,9 +124,6 @@ class PlayerController {
   }
 
   Future<void> playPodcastEpisode(PodcastEpisode episode) async {
-    if (episode.audioUrl == null || episode.audioUrl!.isEmpty) {
-      return;
-    }
     await _guardPlaybackAction('playPodcastEpisode', () {
       return ref
           .read(audioHandlerProvider)
@@ -139,7 +136,7 @@ class PlayerController {
             durationMs: episode.durationSeconds == null
                 ? null
                 : episode.durationSeconds! * 1000,
-            sourceUrl: episode.audioUrl!,
+            sourceUrl: episode.audioUrl ?? '',
           );
     });
     unawaited(

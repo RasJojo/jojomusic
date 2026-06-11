@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/convex_service.dart';
 import '../models/app_models.dart';
 import 'providers.dart';
 
@@ -36,8 +37,9 @@ class SessionController extends AsyncNotifier<AuthSession?> {
       final session = await ref
           .read(baseApiProvider)
           .login(email: email, password: password);
-      await _persistSession(session);
-      return session;
+      final resolved = await _resolveConvexId(session);
+      await _persistSession(resolved);
+      return resolved;
     });
   }
 
@@ -51,9 +53,26 @@ class SessionController extends AsyncNotifier<AuthSession?> {
       final session = await ref
           .read(baseApiProvider)
           .register(name: name, email: email, password: password);
-      await _persistSession(session);
-      return session;
+      final resolved = await _resolveConvexId(session);
+      await _persistSession(resolved);
+      return resolved;
     });
+  }
+
+  /// Ensures the session has a valid Convex _id (not a NestJS UUID).
+  Future<AuthSession> _resolveConvexId(AuthSession session) async {
+    final existing = session.convexUserId;
+    if (existing != null && !existing.contains('-')) return session;
+    try {
+      final convexId = await ConvexService.instance.upsertUser(
+        externalId: session.user.id,
+        name: session.user.name,
+        email: session.user.email,
+      );
+      return session.withConvexUserId(convexId);
+    } catch (_) {
+      return session;
+    }
   }
 
   Future<void> logout() async {
@@ -76,11 +95,27 @@ class SessionController extends AsyncNotifier<AuthSession?> {
           .fetchCurrentUser()
           .timeout(_sessionValidationTimeout);
 
-      // user.id est le Convex _id retourné par /auth/me
+      // Resolve the real Convex _id via upsertUser when:
+      // - convexUserId was never stored (pre-migration sessions), or
+      // - it was incorrectly stored as the NestJS UUID (contains '-').
+      // upsertByExternalId is idempotent — safe to call on every validation.
+      String? convexUserId = session.convexUserId;
+      if (convexUserId == null || convexUserId.contains('-')) {
+        try {
+          convexUserId = await ConvexService.instance.upsertUser(
+            externalId: user.id,
+            name: user.name,
+            email: user.email,
+          );
+        } catch (_) {
+          // Convex unreachable — proceed without it; library will fall back to HTTP.
+        }
+      }
+
       final validated = AuthSession(
         accessToken: session.accessToken,
         user: user,
-        convexUserId: session.convexUserId ?? user.id,
+        convexUserId: convexUserId,
       );
       await _persistSession(validated);
       if (!ref.mounted) {
