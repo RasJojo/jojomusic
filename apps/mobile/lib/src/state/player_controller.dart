@@ -50,6 +50,7 @@ class SleepTimerNotifier extends Notifier<DateTime?> {
     final endTime = DateTime.now().add(duration);
     state = endTime;
     _timer = Timer(duration, () {
+      if (!ref.mounted) return;
       ref.read(audioHandlerProvider).pause();
       state = null;
     });
