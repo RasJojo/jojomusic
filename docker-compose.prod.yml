@@ -6,14 +6,68 @@ services:
     networks:
       - internal
 
+  youtube-cookie-refresher:
+    image: jojomusic-youtube-cookie-refresher:latest
+    container_name: jojomusic-youtube-cookie-refresher
+    restart: unless-stopped
+    environment:
+      YOUTUBE_COOKIE_BROWSER: firefox
+      YOUTUBE_COOKIE_PROFILE: /browser-profile/.config/mozilla/firefox
+      YOUTUBE_COOKIE_OUTPUT: /cookies/cookies.txt
+      YOUTUBE_COOKIE_STATUS: /cookies/cookies.status.json
+      YOUTUBE_COOKIE_REFRESH_INTERVAL_SECONDS: 21600
+      YOUTUBE_COOKIE_VALIDATE_URL: https://www.youtube.com/watch?v=d27gTrPPAyk
+      YOUTUBE_POT_PROVIDER_URL: http://youtube-pot-provider:4416
+    volumes:
+      - ./cookie_state:/cookies
+      - youtube_cookie_browser:/browser-profile:ro
+    networks:
+      - internal
+    depends_on:
+      youtube-pot-provider:
+        condition: service_started
+
+  youtube-pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:1.3.1
+    container_name: jojomusic-youtube-pot-provider
+    restart: unless-stopped
+    init: true
+    networks:
+      - internal
+
+  youtube-cookie-browser:
+    image: lscr.io/linuxserver/firefox:latest
+    container_name: jojomusic-youtube-cookie-browser
+    profiles:
+      - cookie-login
+    restart: unless-stopped
+    shm_size: "1gb"
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: Europe/Paris
+    volumes:
+      - youtube_cookie_browser:/config
+    ports:
+      - "127.0.0.1:3010:3000"
+      - "127.0.0.1:3011:3001"
+
   resolver-api:
     image: jojomusic-resolver:latest
     container_name: jojomusic-resolver
     restart: unless-stopped
     environment:
-      RESOLVER_TIMEOUT_SECONDS: 25
+      RESOLVER_TIMEOUT_SECONDS: 8
+      PIPED_INSTANCES: ""
+      TOR_PROXY: socks5://jojomusic-tor:9050
+      YOUTUBE_POT_PROVIDER_URL: http://youtube-pot-provider:4416
+    depends_on:
+      jojomusic-tor:
+        condition: service_started
+      youtube-pot-provider:
+        condition: service_started
     volumes:
-      - ./cookies.txt:/app/cookies.txt:ro
+      - ./cookie_state/cookies.txt:/app/cookies.txt:ro
     networks:
       - internal
 
@@ -27,13 +81,18 @@ services:
       MEDIA_CACHE_DIR: /data/audio_cache
       IMAGE_CACHE_DIR: /data/image_cache
       POLL_INTERVAL_SECONDS: 3
+      AUDIO_JOB_TIMEOUT_SECONDS: 90
+      TOR_PROXY: socks5://jojomusic-tor:9050
+      YOUTUBE_POT_PROVIDER_URL: http://youtube-pot-provider:4416
     depends_on:
       jojomusic-tor:
+        condition: service_started
+      youtube-pot-provider:
         condition: service_started
     volumes:
       - audio_cache:/data/audio_cache
       - image_cache:/data/image_cache
-      - ./cookies.txt:/app/cookies.txt:ro
+      - ./cookie_state/cookies.txt:/app/cookies.txt:ro
     networks:
       - internal
 
@@ -51,6 +110,7 @@ services:
 volumes:
   audio_cache:
   image_cache:
+  youtube_cookie_browser:
 
 networks:
   internal:
