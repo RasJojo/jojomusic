@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 
 import '../config/app_environment.dart';
@@ -27,6 +29,7 @@ class ApiService {
   static final Map<String, _SearchCacheEntry> _searchCache = {};
   static final Map<String, Future<SearchResult>> _searchInFlight = {};
   static const Duration _searchCacheTtl = Duration(minutes: 6);
+  static const Duration _podcastDetailsTimeout = Duration(seconds: 8);
 
   ApiService withToken(String? token) =>
       ApiService(environment: _environment, accessToken: token);
@@ -194,11 +197,136 @@ class ApiService {
         .toList();
   }
 
-  Future<PodcastDetails> fetchPodcastDetails(String podcastKey) async {
-    final response = await _convexDio.get<Map<String, dynamic>>(
-      '/podcasts/$podcastKey',
-    );
+  Future<PodcastDetails> fetchPodcastDetails(Podcast podcast) async {
+    final emptyFallback = PodcastDetails(podcast: podcast, episodes: const []);
+    try {
+      final details = await _fetchPodcastDetailsByKey(podcast);
+      if (_hasPlayablePodcastEpisode(details)) {
+        return details;
+      }
+      return _fetchPodcastDetailsFromSearch(podcast, fallback: details);
+    } on TimeoutException {
+      return _fetchPodcastDetailsFromSearch(podcast, fallback: emptyFallback);
+    } on DioException catch (error) {
+      if (_canOpenPodcastWithoutRemoteDetails(error)) {
+        return _fetchPodcastDetailsFromSearch(podcast, fallback: emptyFallback);
+      }
+      rethrow;
+    }
+  }
+
+  Future<PodcastDetails> _fetchPodcastDetailsByKey(Podcast podcast) async {
+    final response = await _convexDio
+        .get<Map<String, dynamic>>(
+          '/podcasts/${Uri.encodeComponent(podcast.podcastKey)}',
+        )
+        .timeout(_podcastDetailsTimeout);
     return PodcastDetails.fromJson(response.data!);
+  }
+
+  Future<PodcastDetails> _fetchPodcastDetailsFromSearch(
+    Podcast podcast, {
+    required PodcastDetails fallback,
+  }) async {
+    final query = _podcastFallbackQuery(podcast);
+    if (query.isEmpty) {
+      return fallback;
+    }
+
+    try {
+      final candidates = await searchPodcasts(
+        query,
+        limit: 6,
+      ).timeout(_podcastDetailsTimeout);
+      final candidate = _bestPodcastFallbackCandidate(podcast, candidates);
+      if (candidate == null || candidate.podcastKey == podcast.podcastKey) {
+        return fallback;
+      }
+      final details = await _fetchPodcastDetailsByKey(candidate);
+      if (_hasPlayablePodcastEpisode(details) || fallback.episodes.isEmpty) {
+        return details;
+      }
+    } catch (_) {
+      // Keep the podcast page open even when enrichment cannot be recovered.
+    }
+    return fallback;
+  }
+
+  String _podcastFallbackQuery(Podcast podcast) {
+    return [
+      podcast.title,
+      podcast.publisher,
+    ].where((value) => value.trim().isNotEmpty).join(' ').trim();
+  }
+
+  Podcast? _bestPodcastFallbackCandidate(
+    Podcast original,
+    List<Podcast> candidates,
+  ) {
+    if (candidates.isEmpty) {
+      return null;
+    }
+
+    final originalTitle = _normalizePodcastMatchText(original.title);
+    final originalPublisher = _normalizePodcastMatchText(original.publisher);
+    final ranked = [...candidates]
+      ..sort((a, b) {
+        final aScore = _podcastCandidateScore(
+          a,
+          originalTitle: originalTitle,
+          originalPublisher: originalPublisher,
+        );
+        final bScore = _podcastCandidateScore(
+          b,
+          originalTitle: originalTitle,
+          originalPublisher: originalPublisher,
+        );
+        return bScore.compareTo(aScore);
+      });
+    return ranked.first;
+  }
+
+  int _podcastCandidateScore(
+    Podcast candidate, {
+    required String originalTitle,
+    required String originalPublisher,
+  }) {
+    final title = _normalizePodcastMatchText(candidate.title);
+    final publisher = _normalizePodcastMatchText(candidate.publisher);
+    var score = 0;
+    if (title == originalTitle) score += 100;
+    if (publisher == originalPublisher) score += 30;
+    if (title.contains(originalTitle) || originalTitle.contains(title)) {
+      score += 20;
+    }
+    if (publisher.contains(originalPublisher) ||
+        originalPublisher.contains(publisher)) {
+      score += 10;
+    }
+    if ((candidate.feedUrl ?? '').trim().isNotEmpty) score += 8;
+    if ((candidate.artworkUrl ?? '').trim().isNotEmpty) score += 2;
+    return score;
+  }
+
+  String _normalizePodcastMatchText(String value) =>
+      value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+
+  bool _hasPlayablePodcastEpisode(PodcastDetails details) {
+    return details.episodes.any(
+      (episode) => (episode.audioUrl ?? '').trim().isNotEmpty,
+    );
+  }
+
+  bool _canOpenPodcastWithoutRemoteDetails(DioException error) {
+    final statusCode = error.response?.statusCode;
+    return statusCode == 404 ||
+        statusCode == 500 ||
+        statusCode == 503 ||
+        statusCode == null ||
+        error.type == DioExceptionType.connectionTimeout ||
+        error.type == DioExceptionType.receiveTimeout ||
+        error.type == DioExceptionType.sendTimeout ||
+        error.type == DioExceptionType.connectionError;
   }
 
   Future<List<Podcast>> fetchFollowedPodcasts() async {
@@ -213,13 +341,16 @@ class ApiService {
   }
 
   Future<void> unfollowPodcast(String podcastKey) async {
-    await _convexDio.delete('/me/podcasts/$podcastKey');
+    await _convexDio.delete('/me/podcasts/${Uri.encodeComponent(podcastKey)}');
   }
 
-  Future<ResolvedStream> resolveTrack(Track track) async {
+  Future<ResolvedStream> resolveTrack(
+    Track track, {
+    bool allowPreview = false,
+  }) async {
     final response = await _convexDio.post<Map<String, dynamic>>(
       '/tracks/resolve',
-      data: {'track': track.toJson()},
+      data: {'track': track.toJson(), 'allow_preview': allowPreview},
     );
     return ResolvedStream.fromJson(response.data!);
   }
