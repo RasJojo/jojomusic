@@ -1,4 +1,4 @@
-package com.example.mobile
+package com.rasjojo.jojomusic
 
 import com.ryanheise.audioservice.AudioServiceActivity
 

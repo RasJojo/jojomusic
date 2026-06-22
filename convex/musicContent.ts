@@ -20,6 +20,8 @@ const env = {
     ),
   resolverTimeoutMs: () =>
     parseInt(process.env.RESOLVER_TIMEOUT_SECONDS ?? "25") * 1000,
+  resolverHealthTimeoutMs: () =>
+    parseInt(process.env.RESOLVER_HEALTH_TIMEOUT_MS ?? "700"),
   publicBaseUrl: () =>
     (
       process.env.PUBLIC_BASE_URL ?? "https://jojomusicapi.jojoserv.com"
@@ -32,6 +34,7 @@ const env = {
 };
 
 const ITUNES_BASE = "https://itunes.apple.com";
+const DEEZER_BASE = "https://api.deezer.com";
 const LASTFM_BASE = "https://ws.audioscrobbler.com/2.0/";
 const MUSICBRAINZ_BASE = "https://musicbrainz.org/ws/2";
 
@@ -130,6 +133,7 @@ export type PodcastPayload = {
   podcast_key: string;
   title: string;
   publisher: string;
+  external_id?: string | null;
   description?: string | null;
   artwork_url?: string | null;
   feed_url?: string | null;
@@ -264,6 +268,114 @@ export const BROWSE_CATEGORIES: BrowseCategoryPayload[] = [
   },
 ];
 
+const FALLBACK_PODCASTS: PodcastPayload[] = [
+  {
+    podcast_key: "912451024",
+    external_id: "912451024",
+    title: "Affaires sensibles",
+    publisher: "France Inter",
+    description: "France Inter histoire affaires sensibles documentaire",
+    artwork_url:
+      "https://is1-ssl.mzstatic.com/image/thumb/Podcasts116/v4/63/70/8c/63708c3b-ed11-5d19-fa67-132f92e463f3/mza_8301076687401115427.jpg/600x600bb.jpg",
+    feed_url:
+      "https://radiofrance-podcast.net/podcast09/podcast_0b91efaf-26e6-11e4-907f-782bcb6744eb.xml",
+    external_url:
+      "https://podcasts.apple.com/fr/podcast/affaires-sensibles/id912451024",
+    episode_count: 101,
+  },
+  {
+    podcast_key: "390164336",
+    external_id: "390164336",
+    title: "Le Cours de l'histoire",
+    publisher: "France Culture",
+    description: "France Culture histoire radio france documentaire",
+    artwork_url:
+      "https://is1-ssl.mzstatic.com/image/thumb/Podcasts211/v4/1a/02/0c/1a020ca8-b6d2-39f5-01ba-a0efa9b9eaf7/mza_1050990122467541468.jpg/600x600bb.jpg",
+    feed_url:
+      "https://radiofrance-podcast.net/podcast09/podcast_c951e8a9-6121-4400-a3ef-5f9c958d36c3.xml",
+    external_url:
+      "https://podcasts.apple.com/fr/podcast/le-cours-de-lhistoire/id390164336",
+    episode_count: 80,
+  },
+  {
+    podcast_key: "934552872",
+    external_id: "934552872",
+    title: "Switched on Pop",
+    publisher: "Vulture",
+    description: "music pop songs analysis culture podcast",
+    artwork_url:
+      "https://is1-ssl.mzstatic.com/image/thumb/Podcasts112/v4/4a/87/8c/4a878cc7-0b12-dc80-93b0-c2ce08d5dd0c/mza_8267236680144001404.jpeg/600x600bb.jpg",
+    feed_url: "https://feeds.megaphone.fm/switchedonpop",
+    external_url:
+      "https://podcasts.apple.com/fr/podcast/switched-on-pop/id934552872",
+    episode_count: 540,
+  },
+  {
+    podcast_key: "788236947",
+    external_id: "788236947",
+    title: "Song Exploder",
+    publisher: "Hrishikesh Hirway",
+    description: "music songs artists creation podcast",
+    artwork_url:
+      "https://is1-ssl.mzstatic.com/image/thumb/Podcasts221/v4/05/7b/35/057b3588-c74c-0334-d8ef-c6b8166d4afc/mza_12324100546486323942.jpg/600x600bb.jpg",
+    feed_url: "https://feed.songexploder.net/SongExploder",
+    external_url:
+      "https://podcasts.apple.com/fr/podcast/song-exploder/id788236947",
+    episode_count: 368,
+  },
+  {
+    podcast_key: "1215386938",
+    external_id: "1215386938",
+    title: "Sticky Notes: The Classical Music Podcast",
+    publisher: "Joshua Weilerstein",
+    description: "classical music podcast",
+    artwork_url:
+      "https://is1-ssl.mzstatic.com/image/thumb/Podcasts125/v4/58/60/74/58607414-6263-9fa9-4fad-d5879c071643/mza_11208751241845350981.jpeg/600x600bb.jpg",
+    feed_url: "https://rss.libsyn.com/shows/94145/destinations/477278.xml",
+    external_url:
+      "https://podcasts.apple.com/fr/podcast/sticky-notes-the-classical-music-podcast/id1215386938",
+    episode_count: 290,
+  },
+  {
+    podcast_key: "921359051",
+    external_id: "921359051",
+    title: "Dirty Disco - Electronic Music Podcast",
+    publisher: "Kono Vidovic",
+    description: "electronic music house disco podcast",
+    artwork_url:
+      "https://is1-ssl.mzstatic.com/image/thumb/Podcasts211/v4/fb/28/a7/fb28a7ae-a8da-0560-2ba1-93998d197bfd/mza_14536611333995436510.jpg/600x600bb.jpg",
+    feed_url: "https://www.dirtydiscoradio.com/feed/podcast/",
+    external_url:
+      "https://podcasts.apple.com/fr/podcast/dirty-disco-electronic-music-podcast/id921359051",
+    episode_count: 234,
+  },
+  {
+    podcast_key: "1057255460",
+    external_id: "1057255460",
+    title: "The NPR Politics Podcast",
+    publisher: "NPR",
+    description: "news politics podcast",
+    artwork_url:
+      "https://is1-ssl.mzstatic.com/image/thumb/Podcasts221/v4/71/15/1d/71151d33-32e7-f0e1-2a6b-412bf4835c5d/mza_9550948332778108059.jpg/600x600bb.jpg",
+    feed_url: "https://feeds.npr.org/510310/podcast.xml",
+    external_url:
+      "https://podcasts.apple.com/fr/podcast/the-npr-politics-podcast/id1057255460",
+    episode_count: 1999,
+  },
+  {
+    podcast_key: "120315823",
+    external_id: "120315823",
+    title: "Popcast",
+    publisher: "The New York Times",
+    description: "music pop culture podcast",
+    artwork_url:
+      "https://is1-ssl.mzstatic.com/image/thumb/Podcasts221/v4/44/cc/fa/44ccfa77-7b8a-72e1-ef59-287932034caf/mza_17752910217001854843.jpeg/600x600bb.jpg",
+    feed_url: "https://feeds.simplecast.com/TzbxCT1l",
+    external_url: "https://podcasts.apple.com/fr/podcast/popcast/id120315823",
+    episode_count: 572,
+  },
+];
+
 // ── Key builders ──────────────────────────────────────────────────────────────
 
 function normalizeValue(v: string): string {
@@ -272,6 +384,21 @@ function normalizeValue(v: string): string {
     .trim()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+function normalizeForMatch(v: string): string {
+  return v
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[αΑ]/g, "a")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+function primaryArtistName(artist: string): string {
+  return artist
+    .split(/\s*(?:&|,|feat\.?|ft\.?|featuring|avec)\s*/i)[0]
+    .trim();
 }
 function buildTrackKey(artist: string, title: string): string {
   return normalizeValue(`${artist}-${title}`);
@@ -310,14 +437,27 @@ function makeTrackPayload(
 // ── Dedup helpers ─────────────────────────────────────────────────────────────
 
 function dedupeTracks(tracks: TrackPayload[], limit = 9999): TrackPayload[] {
-  const seen = new Set<string>();
-  return tracks
-    .filter((t) => {
-      if (seen.has(t.track_key)) return false;
-      seen.add(t.track_key);
-      return true;
-    })
-    .slice(0, limit);
+  const map = new Map<string, TrackPayload>();
+  for (const track of tracks) {
+    const existing = map.get(track.track_key);
+    if (!existing) {
+      map.set(track.track_key, track);
+      continue;
+    }
+    map.set(track.track_key, {
+      ...existing,
+      album: existing.album ?? track.album ?? null,
+      artwork_url: existing.artwork_url ?? track.artwork_url ?? null,
+      artist_image_url:
+        existing.artist_image_url ?? track.artist_image_url ?? null,
+      duration_ms: existing.duration_ms ?? track.duration_ms ?? null,
+      external_id: existing.external_id ?? track.external_id ?? null,
+      preview_url: existing.preview_url ?? track.preview_url ?? null,
+      lyrics_synced_available:
+        existing.lyrics_synced_available || track.lyrics_synced_available,
+    });
+  }
+  return [...map.values()].slice(0, limit);
 }
 function dedupeArtists(
   artists: ArtistPayload[],
@@ -362,6 +502,178 @@ function imageAssetLookupKey(entityType: string, entityKey: string): string {
 function audioAssetLookupKey(cacheKey: string): string {
   return createHash("sha1").update(cacheKey).digest("hex");
 }
+
+function previewResolvedStream(
+  track: TrackPayload | undefined,
+): ResolvedStream | null {
+  const previewUrl = track?.preview_url?.trim();
+  if (!track || !previewUrl || !/^https?:\/\//i.test(previewUrl)) {
+    return null;
+  }
+  return {
+    stream_url: previewUrl,
+    webpage_url: null,
+    thumbnail_url: track.artwork_url ?? track.artist_image_url ?? null,
+    title: track.title,
+    artist: track.artist,
+    duration_ms: null,
+    source: track.provider === "deezer" ? "deezer_preview" : "itunes_preview",
+  };
+}
+
+function hasPlayablePreview(track: TrackPayload | undefined): boolean {
+  return previewResolvedStream(track) !== null;
+}
+
+async function resolveItunesPreviewForTrack(
+  track: TrackPayload | undefined,
+  query: string,
+): Promise<ResolvedStream | null> {
+  const searchQueries = dedupeNonEmpty([
+    track ? `${track.artist} ${track.title}` : "",
+    track ? `${track.title} ${track.artist}` : "",
+    query,
+  ]);
+
+  for (const searchQuery of searchQueries) {
+    const candidates = await safeTimed(
+      () => searchTracksItunes(searchQuery, 8),
+      [] as TrackPayload[],
+      2500,
+    );
+    const match =
+      candidates.find(
+        (candidate) =>
+          track &&
+          normalizeValue(candidate.artist) === normalizeValue(track.artist) &&
+          normalizeValue(candidate.title) === normalizeValue(track.title) &&
+          hasPlayablePreview(candidate),
+      ) ??
+      candidates.find((candidate) => hasPlayablePreview(candidate));
+    const preview = previewResolvedStream(
+      match && track
+        ? {
+            ...track,
+            artwork_url: track.artwork_url ?? match.artwork_url ?? null,
+            artist_image_url:
+              track.artist_image_url ?? match.artist_image_url ?? null,
+            duration_ms: track.duration_ms ?? match.duration_ms ?? null,
+            preview_url: track.preview_url ?? match.preview_url ?? null,
+          }
+        : match,
+    );
+    if (preview) return preview;
+  }
+  return null;
+}
+
+async function searchTracksDeezer(
+  query: string,
+  limit = 8,
+): Promise<TrackPayload[]> {
+  const url = new URL(`${DEEZER_BASE}/search/track`);
+  url.searchParams.set("q", query);
+  url.searchParams.set("limit", String(limit));
+  const data = await fetchJson<Record<string, unknown>>(
+    url,
+    { headers: { Accept: "application/json" } },
+    5000,
+  ).catch(() => ({}));
+
+  const tracks = new Map<string, TrackPayload>();
+  for (const item of asList(data.data as Record<string, unknown>[])) {
+    const artist = item.artist as Record<string, unknown> | undefined;
+    const album = item.album as Record<string, unknown> | undefined;
+    const title = String(item.title ?? "").trim();
+    const artistName = String(artist?.name ?? "").trim();
+    const previewUrl = String(item.preview ?? "").trim();
+    if (!title || !artistName || !previewUrl) continue;
+    const t = makeTrackPayload({
+      title,
+      artist: artistName,
+      album: album?.title ? String(album.title) : null,
+      artwork_url:
+        cleanArtworkUrl(String(album?.cover_xl ?? "")) ??
+        cleanArtworkUrl(String(album?.cover_big ?? "")) ??
+        cleanArtworkUrl(String(album?.cover_medium ?? "")),
+      duration_ms: item.duration ? Number(item.duration) * 1000 : null,
+      provider: "deezer",
+      external_id: item.id ? String(item.id) : null,
+      preview_url: previewUrl,
+    });
+    if (!tracks.has(t.track_key)) tracks.set(t.track_key, t);
+  }
+  return [...tracks.values()];
+}
+
+async function resolveDeezerPreviewForTrack(
+  track: TrackPayload | undefined,
+  query: string,
+): Promise<ResolvedStream | null> {
+  const primaryArtist = track ? primaryArtistName(track.artist) : "";
+  const foldedTitle = track ? normalizeForMatch(track.title) : "";
+  const searchQueries = dedupeNonEmpty([
+    track && primaryArtist
+      ? `artist:"${primaryArtist}" track:"${track.title}"`
+      : "",
+    track && primaryArtist && foldedTitle && foldedTitle !== track.title
+      ? `artist:"${primaryArtist}" track:"${foldedTitle}"`
+      : "",
+    track ? `artist:"${track.artist}" track:"${track.title}"` : "",
+    track && foldedTitle && foldedTitle !== track.title
+      ? `artist:"${track.artist}" track:"${foldedTitle}"`
+      : "",
+    track ? `${track.artist} ${track.title}` : "",
+    track && foldedTitle && foldedTitle !== track.title
+      ? `${track.artist} ${foldedTitle}`
+      : "",
+    foldedTitle,
+    query,
+  ]);
+
+  const targetArtist = track ? normalizeForMatch(primaryArtist) : "";
+  const targetTitle = track ? normalizeForMatch(track.title) : "";
+  for (const searchQuery of searchQueries) {
+    const candidates = await safeTimed(
+      () => searchTracksDeezer(searchQuery, 8),
+      [] as TrackPayload[],
+      1800,
+    );
+    const match =
+      candidates.find((candidate) => {
+        if (!track || !hasPlayablePreview(candidate)) return false;
+        const candidateArtist = normalizeForMatch(
+          primaryArtistName(candidate.artist),
+        );
+        const candidateTitle = normalizeForMatch(candidate.title);
+        const artistMatches =
+          candidateArtist === targetArtist ||
+          candidateArtist.includes(targetArtist) ||
+          targetArtist.includes(candidateArtist);
+        const titleMatches =
+          candidateTitle === targetTitle ||
+          candidateTitle.includes(targetTitle) ||
+          targetTitle.includes(candidateTitle);
+        return artistMatches && titleMatches;
+      }) ?? candidates.find((candidate) => hasPlayablePreview(candidate));
+    const preview = previewResolvedStream(
+      match && track
+        ? {
+            ...track,
+            artwork_url: track.artwork_url ?? match.artwork_url ?? null,
+            artist_image_url:
+              track.artist_image_url ?? match.artist_image_url ?? null,
+            duration_ms: track.duration_ms ?? match.duration_ms ?? null,
+            preview_url: track.preview_url ?? match.preview_url ?? null,
+            provider: "deezer",
+          }
+        : match,
+    );
+    if (preview) return preview;
+  }
+  return null;
+}
+
 function resolvedStreamCacheKey(
   payload: { track?: TrackPayload; query?: string },
   query: string,
@@ -421,6 +733,20 @@ async function safeTimed<T>(
   ]);
 }
 
+async function resolverHasValidatedCookies(): Promise<boolean> {
+  const health = await safe(
+    fetchJson<{ cookies_loaded?: boolean; pot_provider_configured?: boolean }>(
+      `${env.resolverUrl()}/health`,
+      undefined,
+      env.resolverHealthTimeoutMs(),
+    ),
+    null,
+  );
+  // The PO token provider helps yt-dlp on some YouTube paths, but it does not
+  // prove Jarvis can extract playable audio. Only validated cookies do.
+  return health?.cookies_loaded === true;
+}
+
 function asList<T>(v: T | T[] | undefined | null): T[] {
   if (!v) return [];
   return Array.isArray(v) ? v : [v];
@@ -451,6 +777,19 @@ async function itunesSearch(
   params: Record<string, string | number>,
 ): Promise<Record<string, unknown>> {
   const url = new URL(`${ITUNES_BASE}/search`);
+  for (const [k, v] of Object.entries(params))
+    url.searchParams.set(k, String(v));
+  return fetchJson(
+    url,
+    { headers: { Accept: "application/json" } },
+    7000,
+  ).catch(() => ({}));
+}
+
+async function itunesLookup(
+  params: Record<string, string | number>,
+): Promise<Record<string, unknown>> {
+  const url = new URL(`${ITUNES_BASE}/lookup`);
   for (const [k, v] of Object.entries(params))
     url.searchParams.set(k, String(v));
   return fetchJson(
@@ -754,6 +1093,7 @@ async function searchAlbums(
     const title = String(row.collectionName ?? "").trim();
     const artist = String(row.artistName ?? "").trim();
     if (!title || !artist) continue;
+    if (isLikelySingleOrEp(title, Number(row.trackCount ?? 0))) continue;
     const key = buildAlbumKey(artist, title);
     if (!albums.has(key))
       albums.set(key, {
@@ -786,6 +1126,7 @@ async function albumsForArtist(
   )) {
     const title = String(row.collectionName ?? "").trim();
     if (!title) continue;
+    if (isLikelySingleOrEp(title, Number(row.trackCount ?? 0))) continue;
     const key = buildAlbumKey(artist, title);
     if (!albums.has(key))
       albums.set(key, {
@@ -805,9 +1146,16 @@ async function albumsForArtist(
 async function searchMusicBrainzAlbums(
   query: string,
   limit = 8,
+  options: { artistOnly?: boolean } = {},
 ): Promise<AlbumPayload[]> {
   const url = new URL(`${MUSICBRAINZ_BASE}/release-group`);
-  url.searchParams.set("query", `${query} AND type:album`);
+  const escapedQuery = query.replace(/"/g, '\\"');
+  url.searchParams.set(
+    "query",
+    options.artistOnly
+      ? `artist:"${escapedQuery}" AND type:album`
+      : `${query} AND type:album`,
+  );
   url.searchParams.set("limit", String(limit));
   url.searchParams.set("fmt", "json");
   const data: Record<string, unknown> = await fetchJson(
@@ -844,6 +1192,14 @@ async function searchMusicBrainzAlbums(
     })
     .filter((a): a is AlbumPayload => a !== null)
     .slice(0, limit);
+}
+
+function isLikelySingleOrEp(title: string, trackCount: number): boolean {
+  return (
+    /\s-\s(?:single|ep)$/i.test(title) ||
+    (/single/i.test(title) && trackCount <= 2) ||
+    (/ep/i.test(title) && trackCount <= 6)
+  );
 }
 
 // ── Album details ─────────────────────────────────────────────────────────────
@@ -963,11 +1319,28 @@ async function itunesPodcastSearch(
   term: string,
   limit: number,
 ): Promise<Record<string, unknown>[]> {
-  const data = await itunesSearch({ term, entity: "podcast", limit }).catch(
-    () => ({}),
-  );
+  const data = await itunesSearch({
+    term,
+    media: "podcast",
+    entity: "podcast",
+    country: "FR",
+    limit,
+  }).catch(() => ({}));
   return asList(
     (data as Record<string, unknown>).results as Record<string, unknown>[],
+  );
+}
+
+async function itunesPodcastLookup(
+  podcastId: string,
+): Promise<Record<string, unknown> | null> {
+  const data = await itunesLookup({ id: podcastId, entity: "podcast" }).catch(
+    () => ({}),
+  );
+  return (
+    asList(
+      (data as Record<string, unknown>).results as Record<string, unknown>[],
+    ).find((row) => row.kind === "podcast") ?? null
   );
 }
 
@@ -977,10 +1350,15 @@ function mapItunesPodcast(
   const title = String(item.collectionName ?? item.trackName ?? "").trim();
   const publisher = String(item.artistName ?? "").trim();
   if (!title || !publisher) return null;
+  const externalId =
+    item.collectionId || item.trackId
+      ? String(item.collectionId ?? item.trackId)
+      : null;
   return {
-    podcast_key: buildPodcastKey(publisher, title),
+    podcast_key: externalId ?? buildPodcastKey(publisher, title),
     title,
     publisher,
+    external_id: externalId,
     description: null,
     artwork_url: upscaleArtwork(
       (item.artworkUrl600 as string) ?? (item.artworkUrl100 as string),
@@ -999,8 +1377,9 @@ async function searchPodcastsImpl(
   limit = 12,
 ): Promise<PodcastPayload[]> {
   const variants = dedupeNonEmpty([
-    query,
     `${query} podcast`,
+    query,
+    `${query} balado`,
     query.split(/\s+/)[0],
   ]);
   const seen = new Map<string, PodcastPayload>();
@@ -1013,7 +1392,125 @@ async function searchPodcastsImpl(
       }
     }),
   );
-  return [...seen.values()].slice(0, limit);
+  for (const fallback of fallbackPodcastsForQuery(query, limit)) {
+    const existing = seen.get(fallback.podcast_key);
+    seen.set(
+      fallback.podcast_key,
+      existing
+        ? {
+            ...existing,
+            external_id: existing.external_id ?? fallback.external_id ?? null,
+            description: existing.description ?? fallback.description ?? null,
+            artwork_url: existing.artwork_url ?? fallback.artwork_url ?? null,
+            feed_url: existing.feed_url ?? fallback.feed_url ?? null,
+            external_url: existing.external_url ?? fallback.external_url ?? null,
+            episode_count: existing.episode_count ?? fallback.episode_count ?? null,
+          }
+        : fallback,
+    );
+  }
+  return [...seen.values()]
+    .sort((a, b) => {
+      const relevanceDiff =
+        podcastQueryScore(query, b) - podcastQueryScore(query, a);
+      if (relevanceDiff !== 0) return relevanceDiff;
+      const aFeed = a.feed_url?.trim() ? 1 : 0;
+      const bFeed = b.feed_url?.trim() ? 1 : 0;
+      if (aFeed !== bFeed) return bFeed - aFeed;
+      return (b.episode_count ?? 0) - (a.episode_count ?? 0);
+    })
+    .slice(0, limit);
+}
+
+function podcastQueryScore(query: string, podcast: PodcastPayload): number {
+  const tokens = searchTokens(query);
+  if (tokens.length === 0) return 0;
+  const text = normalizeSearchValue(
+    [
+      podcast.title,
+      podcast.publisher,
+      podcast.description ?? "",
+      podcast.external_url ?? "",
+    ].join(" "),
+  );
+  const parts = new Set(text.split("-").filter(Boolean));
+  return tokens.reduce(
+    (sum, token) => sum + (parts.has(token) || text.includes(token) ? 1 : 0),
+    0,
+  );
+}
+
+function fallbackPodcastsForQuery(query: string, limit: number): PodcastPayload[] {
+  const tokens = searchTokens(query);
+  if (tokens.length === 0) return FALLBACK_PODCASTS.slice(0, limit);
+  const scored = FALLBACK_PODCASTS.map((podcast) => {
+    return { podcast, score: podcastQueryScore(query, podcast) };
+  })
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return scored.map((row) => row.podcast).slice(0, limit);
+}
+
+function findFallbackPodcastByKey(podcastKey: string): PodcastPayload | null {
+  const normalizedKey = normalizeSearchValue(podcastKey.replace(/-/g, " "));
+  return (
+    FALLBACK_PODCASTS.find(
+      (podcast) =>
+        podcast.podcast_key === podcastKey ||
+        podcast.external_id === podcastKey ||
+        buildPodcastKey(podcast.publisher, podcast.title) === podcastKey ||
+        normalizeSearchValue(
+          buildPodcastKey(podcast.publisher, podcast.title).replace(/-/g, " "),
+        ) === normalizedKey,
+    ) ?? null
+  );
+}
+
+function podcastSearchQueriesFromKey(podcastKey: string): string[] {
+  const parts = podcastKey.split("-").filter(Boolean);
+  return dedupeNonEmpty([
+    podcastKey.replace(/-/g, " "),
+    parts.slice(1).join(" "),
+    parts.slice(2).join(" "),
+    parts.slice(Math.max(0, parts.length - 4)).join(" "),
+  ]);
+}
+
+function legacyPodcastKeyForItem(item: Record<string, unknown>): string | null {
+  const title = String(item.collectionName ?? item.trackName ?? "").trim();
+  const publisher = String(item.artistName ?? "").trim();
+  return title && publisher ? buildPodcastKey(publisher, title) : null;
+}
+
+async function findItunesPodcastByKey(
+  podcastKey: string,
+): Promise<Record<string, unknown> | null> {
+  if (/^\d+$/.test(podcastKey)) {
+    return itunesPodcastLookup(podcastKey);
+  }
+
+  const batches = await Promise.all(
+    podcastSearchQueriesFromKey(podcastKey).map((query) =>
+      safe(itunesPodcastSearch(query, 10), []),
+    ),
+  );
+  const items = batches.flat();
+  const normalizedKey = normalizeSearchValue(podcastKey.replace(/-/g, " "));
+  return (
+    items.find((item) => {
+      const pod = mapItunesPodcast(item);
+      const legacyKey = legacyPodcastKeyForItem(item);
+      return (
+        pod?.podcast_key === podcastKey ||
+        pod?.external_id === podcastKey ||
+        legacyKey === podcastKey ||
+        (legacyKey != null &&
+          normalizeSearchValue(legacyKey.replace(/-/g, " ")) === normalizedKey)
+      );
+    }) ??
+    items[0] ??
+    null
+  );
 }
 
 // ── Podcast RSS parsing ───────────────────────────────────────────────────────
@@ -1030,9 +1527,14 @@ function extractXmlTag(xml: string, tag: string, nth = 0): string | null {
 }
 
 function extractXmlAttr(xml: string, tag: string, attr: string): string | null {
-  const re = new RegExp(`<${tag}[^>]*\\s${attr}="([^"]*)"`, "i");
-  const match = xml.match(re);
-  return match ? match[1] : null;
+  // Double quotes
+  const re1 = new RegExp(`<${tag}[^>]*\\s${attr}="([^"]*)"`, "i");
+  const m1 = xml.match(re1);
+  if (m1) return m1[1];
+  // Single quotes (some RSS generators)
+  const re2 = new RegExp(`<${tag}[^>]*\\s${attr}='([^']*)'`, "i");
+  const m2 = xml.match(re2);
+  return m2 ? m2[1] : null;
 }
 
 function parseRssItems(feedXml: string): PodcastEpisodePayload[] {
@@ -1043,7 +1545,10 @@ function parseRssItems(feedXml: string): PodcastEpisodePayload[] {
     const xml = match[0];
     const title = extractXmlTag(xml, "title") ?? "";
     if (!title) continue;
-    const audioUrl = extractXmlAttr(xml, "enclosure", "url") ?? null;
+    const audioUrl =
+      extractXmlAttr(xml, "enclosure", "url") ??
+      extractXmlAttr(xml, "media:content", "url") ??
+      null;
     const durationRaw =
       extractXmlTag(xml, "itunes:duration") ?? extractXmlTag(xml, "duration");
     const duration_seconds = durationRaw ? parseDuration(durationRaw) : null;
@@ -1469,6 +1974,66 @@ async function findReadyAudioAsset(
   };
 }
 
+async function hasReadyAudioAsset(
+  ctx: ActionCtx,
+  track: TrackPayload,
+): Promise<boolean> {
+  const query = `${track.artist} - ${track.title}`;
+  const cacheKey = resolvedStreamCacheKey({ track }, query);
+  const asset = await ctx.runQuery(api.audioAssets.getByLookupKey, {
+    lookupKey: audioAssetLookupKey(cacheKey),
+  });
+  return asset?.status === "ready" && Boolean(asset.filePath);
+}
+
+async function hasCachedResolvedStream(
+  ctx: ActionCtx,
+  track: TrackPayload,
+): Promise<boolean> {
+  const query = `${track.artist} - ${track.title}`;
+  const cacheKey = resolvedStreamCacheKey({ track }, query);
+  const cached = await ctx.runQuery(api.cache.get, {
+    key: `resolved:${cacheKey}`,
+  });
+  if (!cached || Date.now() - (cached.cachedAt as number) >= 18 * 60_000) {
+    return false;
+  }
+  const cachedValue = JSON.parse(cached.value as string) as ResolvedStream;
+  return /^https?:\/\//i.test(cachedValue.stream_url);
+}
+
+async function filterInstantPlayableTracks(
+  ctx: ActionCtx,
+  tracks: TrackPayload[],
+  limit: number,
+): Promise<TrackPayload[]> {
+  const playable: TrackPayload[] = [];
+  const readyChecks: Promise<void>[] = [];
+
+  for (const track of tracks) {
+    if (hasPlayablePreview(track)) {
+      playable.push(track);
+      continue;
+    }
+    readyChecks.push(
+      hasReadyAudioAsset(ctx, track)
+        .then((ready) => {
+          if (ready) {
+            playable.push(track);
+            return;
+          }
+          return hasCachedResolvedStream(ctx, track).then((cached) => {
+            if (cached) playable.push(track);
+          });
+        })
+        .catch(() => {}),
+    );
+  }
+
+  if (readyChecks.length) await Promise.allSettled(readyChecks);
+  return dedupeTracks(playable, limit);
+}
+
 async function waitForReadyAudioAsset(
   ctx: ActionCtx,
   lookupKey: string,
@@ -1533,11 +2098,14 @@ async function hydrateTrackVisuals(
   fallbackImageUrl: string | null,
   iTunesLimit: number,
 ): Promise<TrackPayload[]> {
-  const needsVisual = tracks.filter(
-    (t) => !t.artwork_url && !t.artist_image_url,
+  const needsItunesEnrichment = tracks.filter(
+    (t) =>
+      !t.preview_url ||
+      (!t.artwork_url && !t.artist_image_url) ||
+      t.duration_ms == null,
   );
-  if (!needsVisual.length) return tracks;
-  const itunesSubset = needsVisual.slice(0, iTunesLimit);
+  if (!needsItunesEnrichment.length) return tracks;
+  const itunesSubset = needsItunesEnrichment.slice(0, iTunesLimit);
   const enrichedMap = new Map<string, TrackPayload>();
   await Promise.all(
     itunesSubset.map(async (track) => {
@@ -1558,6 +2126,8 @@ async function hydrateTrackVisuals(
           artwork_url: match.artwork_url ?? track.artwork_url ?? null,
           artist_image_url:
             match.artist_image_url ?? track.artist_image_url ?? null,
+          duration_ms: track.duration_ms ?? match.duration_ms ?? null,
+          preview_url: track.preview_url ?? match.preview_url ?? null,
         });
     }),
   );
@@ -1637,19 +2207,44 @@ function hasExplicitYoutubeMarkers(query: string): boolean {
   return /youtube\.com|youtu\.be|ytb/i.test(query);
 }
 
+function normalizeSearchValue(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function searchTokens(query: string): string[] {
-  return normalizeValue(query)
+  return normalizeSearchValue(query)
     .split("-")
     .filter((token) => token.length > 2);
+}
+
+function trackSearchTokenSet(track: TrackPayload): Set<string> {
+  return new Set(
+    normalizeSearchValue([track.artist, track.title, track.album ?? ""].join(" "))
+      .split("-")
+      .filter((token) => token.length > 2),
+  );
+}
+
+function trackQueryTokenOverlap(query: string, track: TrackPayload): number {
+  const haystackTokens = trackSearchTokenSet(track);
+  return searchTokens(query).filter((token) => haystackTokens.has(token))
+    .length;
 }
 
 function trackContainsAllQueryTokens(query: string, track: TrackPayload): boolean {
   const tokens = searchTokens(query);
   if (tokens.length < 2) return true;
-  const haystack = normalizeValue(
-    [track.artist, track.title, track.album ?? ""].join(" "),
-  );
-  return tokens.every((token) => haystack.includes(token));
+  return trackQueryTokenOverlap(query, track) === tokens.length;
+}
+
+function trackContainsAnyQueryToken(query: string, track: TrackPayload): boolean {
+  return trackQueryTokenOverlap(query, track) > 0;
 }
 
 function shouldUseYoutubeSearchFallback(
@@ -1696,8 +2291,13 @@ async function searchImpl(
     albums,
     mbAlbums,
     podcasts,
+    youtubeAvailable,
   ] = await Promise.all([
-    safeTimed(() => searchTracksItunes(normalizedQuery, limit), [], fastTimeoutMs),
+    safeTimed(
+      () => searchTracksItunes(normalizedQuery, Math.max(limit * 4, 12)),
+      [],
+      fastTimeoutMs,
+    ),
     compactQuery
       ? Promise.resolve([] as ArtistPayload[][])
       : Promise.all(
@@ -1746,6 +2346,7 @@ async function searchImpl(
           [],
           slowTimeoutMs,
         ),
+    resolverHasValidatedCookies(),
   ]);
 
   let artists = dedupeArtists(
@@ -1763,17 +2364,13 @@ async function searchImpl(
   artists = await enrichArtistImages(artists);
 
   const bestArtist = findBestArtistMatch(normalizedQuery, artists);
-  let resultTracks = dedupeTracks(tracks, limit);
+  let resultTracks = dedupeTracks(tracks, Math.max(limit * 2, 12));
   let resultAlbums = dedupeAlbums(
     [...mbAlbums, ...albums],
     Math.min(limit, 10),
   );
 
-  if (
-    bestArtist &&
-    (resultTracks.length < Math.min(limit, 8) ||
-      resultAlbums.length < Math.min(limit, 6))
-  ) {
+  if (bestArtist) {
     const [artistTracks, musicbrainzA, itunesA] = await Promise.all([
       safeTimed(
         () => topTracksForArtist(bestArtist.name, Math.min(limit, 6)),
@@ -1781,7 +2378,10 @@ async function searchImpl(
         3500,
       ),
       safeTimed(
-        () => searchMusicBrainzAlbums(`${bestArtist.name}`, Math.min(limit, 6)),
+        () =>
+          searchMusicBrainzAlbums(`${bestArtist.name}`, Math.min(limit, 6), {
+            artistOnly: true,
+          }),
         [],
         3000,
       ),
@@ -1791,22 +2391,31 @@ async function searchImpl(
         3000,
       ),
     ]);
-    resultTracks = dedupeTracks([...artistTracks, ...resultTracks], limit);
+    resultTracks = dedupeTracks(
+      [...artistTracks, ...resultTracks],
+      Math.max(limit * 2, 12),
+    );
     const specific = dedupeAlbums(
-      [...musicbrainzA, ...itunesA],
+      [...itunesA, ...albums, ...musicbrainzA],
       Math.min(limit, 10),
     );
     if (specific.length > 0) resultAlbums = specific;
   }
 
-  if (shouldUseYoutubeSearchFallback(normalizedQuery, resultTracks, artists)) {
+  if (
+    youtubeAvailable &&
+    shouldUseYoutubeSearchFallback(normalizedQuery, resultTracks, artists)
+  ) {
     const ytTracks = await safeTimed(
       () => searchYoutubeTracks(normalizedQuery, Math.min(limit, 6)),
       [],
       4500,
     );
     if (ytTracks.length > 0)
-      resultTracks = dedupeTracks([...ytTracks, ...resultTracks], limit);
+      resultTracks = dedupeTracks(
+        [...ytTracks, ...resultTracks],
+        Math.max(limit * 2, 12),
+      );
   }
 
   const artistLookup = new Map(artists.map((a) => [a.artist_key, a]));
@@ -1814,8 +2423,52 @@ async function searchImpl(
     resultTracks,
     artistLookup,
     bestArtist?.image_url ?? null,
-    Math.min(limit, 3),
+    Math.min(Math.max(limit * 3, 8), 18),
   );
+  if (searchTokens(normalizedQuery).length >= 2) {
+    const tokenMatchedTracks = resultTracks.filter((track) =>
+      trackContainsAllQueryTokens(normalizedQuery, track),
+    );
+    const partialTokenMatchedTracks = resultTracks.filter((track) =>
+      trackContainsAnyQueryToken(normalizedQuery, track),
+    );
+    const instantTokenMatchedTracks = await filterInstantPlayableTracks(
+      ctx,
+      tokenMatchedTracks,
+      Math.max(limit * 2, 12),
+    );
+    if (instantTokenMatchedTracks.length) {
+      resultTracks = instantTokenMatchedTracks;
+    } else {
+      resultTracks = await filterInstantPlayableTracks(
+        ctx,
+        partialTokenMatchedTracks,
+        Math.max(limit * 2, 12),
+      );
+    }
+  } else {
+    resultTracks = await filterInstantPlayableTracks(
+      ctx,
+      resultTracks,
+      Math.max(limit * 2, 12),
+    );
+  }
+  if (resultTracks.length === 0) {
+    let fallbackTracks = (
+      await safeTimed(
+        () => searchTracksItunes(normalizedQuery, Math.max(limit * 3, 8)),
+        [] as TrackPayload[],
+        fastTimeoutMs,
+      )
+    ).filter((track) => hasPlayablePreview(track));
+    if (searchTokens(normalizedQuery).length >= 2) {
+      fallbackTracks = fallbackTracks.filter((track) =>
+        trackContainsAllQueryTokens(normalizedQuery, track),
+      );
+    }
+    resultTracks = dedupeTracks(fallbackTracks, Math.max(limit * 2, 12));
+  }
+  resultTracks = dedupeTracks(resultTracks, limit);
   artists = backfillArtistImagesFromTracks(artists, resultTracks);
 
   const [mArtists, mTracks, mAlbums, mPodcasts] = await Promise.all([
@@ -1825,7 +2478,7 @@ async function searchImpl(
     attachManagedPodcastArtwork(ctx, podcasts),
   ]);
 
-  void primeAudioAssetsImpl(ctx, mTracks, 3);
+  void primeAudioAssetsImpl(ctx, mTracks, 3, youtubeAvailable);
   return {
     query: normalizedQuery,
     artists: mArtists,
@@ -1841,8 +2494,14 @@ async function primeAudioAssetsImpl(
   ctx: ActionCtx,
   tracks: TrackPayload[],
   limit = 3,
+  youtubeAvailable?: boolean,
 ): Promise<void> {
-  const unique = dedupeTracks(tracks, limit).slice(0, limit);
+  const canUseYoutube = youtubeAvailable ?? (await resolverHasValidatedCookies());
+  if (!canUseYoutube) return;
+  const unique = dedupeTracks(tracks, limit * 2)
+    .filter((track) => !hasPlayablePreview(track))
+    .slice(0, limit);
+  if (!unique.length) return;
   await Promise.allSettled(
     unique.map((track) => {
       const query = `${track.artist} - ${track.title}`;
@@ -2077,7 +2736,7 @@ export const search = internalAction({
   handler: async (ctx, args) =>
     withCache(
       ctx,
-      `search:${args.query.toLowerCase().trim()}:${args.limit ?? 20}`,
+      `search:v9:${args.query.toLowerCase().trim()}:${args.limit ?? 20}`,
       TTL.SEARCH,
       () => searchImpl(ctx, args.query, args.limit ?? 20),
     ),
@@ -2193,57 +2852,72 @@ export const browseCategory = internalAction({
 
 export const searchPodcasts = internalAction({
   args: { query: v.string(), limit: v.optional(v.number()) },
-  handler: async (ctx, args) =>
-    withCache(
-      ctx,
-      `podcasts:search:${args.query.toLowerCase().trim()}:${args.limit ?? 12}`,
-      TTL.PODCASTS_SEARCH,
-      async () => {
-        const pods = await searchPodcastsImpl(args.query, args.limit ?? 12);
-        return attachManagedPodcastArtwork(ctx, pods);
-      },
-    ),
+  handler: async (ctx, args) => {
+    const key = `podcasts:search:v5:${args.query.toLowerCase().trim()}:${args.limit ?? 12}`;
+    const cached = await ctx.runQuery(api.cache.get, { key });
+    if (cached && Date.now() - (cached.cachedAt as number) < TTL.PODCASTS_SEARCH) {
+      return JSON.parse(cached.value as string) as PodcastPayload[];
+    }
+
+    const pods = await searchPodcastsImpl(args.query, args.limit ?? 12);
+    const attached = await attachManagedPodcastArtwork(ctx, pods);
+    if (attached.length > 0) {
+      await ctx.runMutation(api.cache.set, {
+        key,
+        value: JSON.stringify(attached),
+        cachedAt: Date.now(),
+      });
+    }
+    return attached;
+  },
 });
 
 export const podcastDetails = internalAction({
   args: { podcastKey: v.string() },
   handler: async (ctx, args) =>
     withCache(ctx, `podcast:${args.podcastKey}`, TTL.PODCAST, async () => {
-      const keyParts = args.podcastKey.split("-");
-      const searchQuery = keyParts.slice(1).join(" ") || keyParts[0];
-      const items = await safe(itunesPodcastSearch(searchQuery, 10), []);
-      const item =
-        items.find(
-          (i) => mapItunesPodcast(i)?.podcast_key === args.podcastKey,
-        ) ?? items[0];
-      if (!item) throw new Error("NOT_FOUND");
-      const podcast = mapItunesPodcast(item);
+      const fallbackPodcast = findFallbackPodcastByKey(args.podcastKey);
+      const item = fallbackPodcast
+        ? null
+        : await findItunesPodcastByKey(args.podcastKey);
+      if (!fallbackPodcast && !item) throw new Error("NOT_FOUND");
+      const podcast = fallbackPodcast ?? mapItunesPodcast(item!);
       if (!podcast) throw new Error("NOT_FOUND");
+      const resolvedPodcast =
+        /^\d+$/.test(args.podcastKey) && !fallbackPodcast
+          ? { ...podcast, podcast_key: args.podcastKey }
+          : podcast;
+      const feedUrl = fallbackPodcast?.feed_url ?? String(item?.feedUrl ?? "");
+      const podTitle =
+        fallbackPodcast?.title ?? String(item?.collectionName ?? "");
+      const podArtwork =
+        fallbackPodcast?.artwork_url ??
+        upscaleArtwork(
+          (item?.artworkUrl600 as string) ?? (item?.artworkUrl100 as string),
+        );
 
       let episodes: PodcastEpisodePayload[] = [];
-      if (item.feedUrl) {
+      if (feedUrl) {
         const xml = await safe(
-          fetchText(String(item.feedUrl), undefined, 10000),
+          fetchText(feedUrl, undefined, 10000),
           null,
         );
         if (xml) {
-          const podTitle = String(item.collectionName ?? "");
-          const podArtwork = upscaleArtwork(
-            (item.artworkUrl600 as string) ?? (item.artworkUrl100 as string),
-          );
           episodes = parseRssItems(xml)
             .map((e) => ({
               ...e,
               podcast_title: podTitle,
               artwork_url: e.artwork_url ?? podArtwork,
               episode_key: buildEpisodeKey(args.podcastKey, e.title),
-              publisher: podcast.publisher,
+              publisher: resolvedPodcast.publisher,
             }))
             .slice(0, 50);
           episodes = await attachManagedEpisodeArtwork(ctx, episodes);
         }
       }
-      const [mPodcast] = await attachManagedPodcastArtwork(ctx, [podcast]);
+      const [mPodcast] = await attachManagedPodcastArtwork(ctx, [
+        resolvedPodcast,
+      ]);
       return { podcast: mPodcast, episodes };
     }),
 });
@@ -2292,10 +2966,22 @@ export const resolveTrack = internalAction({
     query: v.optional(v.string()),
     artist: v.optional(v.string()),
     title: v.optional(v.string()),
+    allowPreview: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    const query = args.track
-      ? `${(args.track as TrackPayload).artist} - ${(args.track as TrackPayload).title}`
+    const allowPreview = args.allowPreview !== false;
+    const track = args.track as TrackPayload | undefined;
+    const preview = allowPreview ? previewResolvedStream(track) : null;
+    if (preview) return preview;
+
+    const directYoutubeQuery =
+      track?.external_id && hasExplicitYoutubeMarkers(track.external_id)
+        ? track.external_id
+        : null;
+    const query = directYoutubeQuery
+      ? directYoutubeQuery
+      : track
+      ? `${track.artist} - ${track.title}`
       : args.artist && args.title
         ? `${args.artist} - ${args.title}`
         : (args.query ?? "").trim();
@@ -2309,6 +2995,18 @@ export const resolveTrack = internalAction({
     const ready = await findReadyAudioAsset(ctx, lookupKey);
     if (ready) return ready;
 
+    if (allowPreview) {
+      const itunesPreview = await resolveItunesPreviewForTrack(track, query);
+      if (itunesPreview) return itunesPreview;
+      const deezerPreview = await resolveDeezerPreviewForTrack(track, query);
+      if (deezerPreview) return deezerPreview;
+    }
+
+    const youtubeAvailable = await resolverHasValidatedCookies();
+    if (!youtubeAvailable) {
+      throw new Error("STREAM_NOT_INSTANTLY_PLAYABLE");
+    }
+
     await ensureAudioAssetQueued(
       ctx,
       { track: args.track as TrackPayload | undefined, query: args.query },
@@ -2316,7 +3014,12 @@ export const resolveTrack = internalAction({
       cacheKey,
     );
 
-    const prepared = await waitForReadyAudioAsset(ctx, lookupKey);
+    // Keep the wait very short: the media_worker downloads the full file (60–120 s)
+    // and can never finish within the 15 s client timeout. A 2 s window is enough
+    // to catch assets that were already being processed and just finished. Failing
+    // fast here lets the Flutter local-YouTube fallback kick in after ~2 s instead
+    // of after 12 s.
+    const prepared = await waitForReadyAudioAsset(ctx, lookupKey, 2_000);
     if (prepared) return prepared;
 
     const cached = await ctx.runQuery(api.cache.get, {
@@ -2324,7 +3027,7 @@ export const resolveTrack = internalAction({
     });
     if (cached && Date.now() - (cached.cachedAt as number) < 18 * 60_000) {
       const cachedValue = JSON.parse(cached.value as string) as ResolvedStream;
-      if (isManagedMediaUrl(cachedValue.stream_url)) {
+      if (/^https?:\/\//i.test(cachedValue.stream_url)) {
         return cachedValue;
       }
     }
@@ -2336,7 +3039,7 @@ export const resolveTrack = internalAction({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ query }),
       },
-      env.resolverTimeoutMs(),
+      Math.min(env.resolverTimeoutMs(), 2_500),
     );
     if (isManagedMediaUrl(response.stream_url)) {
       void ctx.runMutation(api.cache.set, {

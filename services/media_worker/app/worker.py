@@ -6,8 +6,10 @@ import logging
 import mimetypes
 import os
 import re
+import signal
 import time
 import unicodedata
+from contextlib import contextmanager
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -29,8 +31,11 @@ IMAGE_CACHE_DIR = Path(os.getenv("IMAGE_CACHE_DIR", "/data/image_cache")).resolv
 TEMP_DIR = MEDIA_CACHE_DIR / ".tmp"
 IMAGE_TEMP_DIR = IMAGE_CACHE_DIR / ".tmp"
 TOR_PROXY = os.getenv("TOR_PROXY")
+YOUTUBE_POT_PROVIDER_URL = os.getenv("YOUTUBE_POT_PROVIDER_URL")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "3"))
+AUDIO_JOB_TIMEOUT = int(os.getenv("AUDIO_JOB_TIMEOUT_SECONDS", "90"))
 USER_AGENT = "JojoMusic/1.0 (+https://jojomusicapi.jojoserv.com)"
+YOUTUBE_PLAYER_CLIENTS = ["mweb", "web_safari", "web", "android", "ios"]
 
 NEGATIVE_HINTS = (
     "karaoke", "instrumental", "nightcore", "slowed", "sped up",
@@ -79,15 +84,51 @@ def convex_query(path: str, args: dict[str, Any]) -> Any:
 # ── yt-dlp helpers ────────────────────────────────────────────────────────────
 
 COOKIE_FILE = Path("/tmp/cookies.txt")
+COOKIE_SOURCE_FILE = Path("/app/cookies.txt")
+
+
+def _has_cookie_source() -> bool:
+    return COOKIE_SOURCE_FILE.exists() and COOKIE_SOURCE_FILE.stat().st_size > 0
 
 
 def _ensure_cookies() -> str | None:
-    source = Path("/app/cookies.txt")
-    if source.exists():
+    if _has_cookie_source():
         import shutil
-        shutil.copy2(source, COOKIE_FILE)
+        shutil.copy2(COOKIE_SOURCE_FILE, COOKIE_FILE)
         return str(COOKIE_FILE)
     return None
+
+
+def youtube_extractor_args() -> dict[str, dict[str, Any]]:
+    args: dict[str, dict[str, Any]] = {
+        "youtube": {
+            "player_client": YOUTUBE_PLAYER_CLIENTS,
+        },
+    }
+    if YOUTUBE_POT_PROVIDER_URL:
+        args["youtubepot-bgutilhttp"] = {
+            "base_url": [YOUTUBE_POT_PROVIDER_URL.rstrip("/")],
+        }
+    return args
+
+
+@contextmanager
+def hard_timeout(seconds: int, label: str):
+    if seconds <= 0:
+        yield
+        return
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def handle_timeout(signum, frame):  # noqa: ARG001
+        raise TimeoutError(f"{label} exceeded {seconds}s")
+
+    signal.signal(signal.SIGALRM, handle_timeout)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def first_entry(info: dict[str, Any]) -> dict[str, Any]:
@@ -258,11 +299,12 @@ def find_best_audio_candidate(query: str, ydl_opts: dict[str, Any]) -> tuple[str
     return best_url, best
 
 
-def download_audio_asset(query: str, base_name: str) -> tuple[Path, dict[str, Any]]:
-    ensure_dir(MEDIA_CACHE_DIR)
-    ensure_dir(TEMP_DIR)
-    clean_previous_outputs(MEDIA_CACHE_DIR, base_name)
-    output_template = str(MEDIA_CACHE_DIR / f"{base_name}.%(ext)s")
+def build_audio_ydl_options(
+    output_template: str,
+    *,
+    use_proxy: bool = False,
+    use_cookies: bool = True,
+) -> dict[str, Any]:
     ydl_opts: dict[str, Any] = {
         "format": "bestaudio[ext=m4a]/bestaudio[acodec*=aac]/bestaudio/best",
         "default_search": "ytsearch1",
@@ -278,11 +320,7 @@ def download_audio_asset(query: str, base_name: str) -> tuple[Path, dict[str, An
         "concurrent_fragment_downloads": 1,
         "prefer_ffmpeg": True,
         "remote_components": ["ejs:github"],
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "ios", "web"],
-            },
-        },
+        "extractor_args": youtube_extractor_args(),
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -291,16 +329,47 @@ def download_audio_asset(query: str, base_name: str) -> tuple[Path, dict[str, An
             }
         ],
     }
-    cookie_path = _ensure_cookies()
+    if use_proxy and TOR_PROXY:
+        ydl_opts["proxy"] = TOR_PROXY
+    cookie_path = _ensure_cookies() if use_cookies else None
     if cookie_path:
         ydl_opts["cookiefile"] = cookie_path
-    best_url, search_entry = find_best_audio_candidate(query, ydl_opts)
-    with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(best_url, download=True)
-        entry = first_entry(info)
-    if search_entry.get("thumbnail") and not entry.get("thumbnail"):
-        entry["thumbnail"] = search_entry.get("thumbnail")
-    return find_output_path(base_name), entry
+    return ydl_opts
+
+
+def download_audio_asset(query: str, base_name: str) -> tuple[Path, dict[str, Any]]:
+    ensure_dir(MEDIA_CACHE_DIR)
+    ensure_dir(TEMP_DIR)
+    output_template = str(MEDIA_CACHE_DIR / f"{base_name}.%(ext)s")
+
+    if not _has_cookie_source():
+        logger.warning("audio resolve skipped: no validated YouTube cookies query=%s", query)
+        raise RuntimeError("YOUTUBE_COOKIES_NOT_READY")
+
+    attempts: list[tuple[str, bool, bool]] = [("cookies", False, True)]
+
+    last_error: Exception | None = None
+    for label, use_proxy, use_cookies in attempts:
+        clean_previous_outputs(MEDIA_CACHE_DIR, base_name)
+        ydl_opts = build_audio_ydl_options(
+            output_template,
+            use_proxy=use_proxy,
+            use_cookies=use_cookies,
+        )
+        try:
+            logger.info("audio resolve attempt=%s query=%s", label, query)
+            best_url, search_entry = find_best_audio_candidate(query, ydl_opts)
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(best_url, download=True)
+                entry = first_entry(info)
+            if search_entry.get("thumbnail") and not entry.get("thumbnail"):
+                entry["thumbnail"] = search_entry.get("thumbnail")
+            return find_output_path(base_name), entry
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logger.warning("audio resolve attempt failed attempt=%s query=%s error=%s", label, query, exc)
+
+    raise last_error or RuntimeError(f"audio resolve failed for {query}")
 
 
 def infer_image_extension(content_type: str | None, source_url: str) -> str:
@@ -364,7 +433,8 @@ def process_audio_job(job: dict[str, Any]) -> None:
     track_key = str(job.get("trackKey") or "")
     logger.info("processing audio %s for %s", lookup_key, query)
     try:
-        output_path, entry = download_audio_asset(query, asset_key)
+        with hard_timeout(AUDIO_JOB_TIMEOUT, "audio job"):
+            output_path, entry = download_audio_asset(query, asset_key)
         duration_seconds = entry.get("duration")
         duration_ms = int(duration_seconds * 1000) if duration_seconds else None
         thumbnail_url = entry.get("thumbnail")
