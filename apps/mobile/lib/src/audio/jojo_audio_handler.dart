@@ -11,6 +11,7 @@ import '../data/api_service.dart';
 import '../data/app_database.dart';
 import '../data/artwork_cache.dart';
 import '../data/convex_service.dart';
+import '../data/itunes_preview_resolver.dart';
 import '../data/lrclib_service.dart';
 import '../data/sponsorblock_service.dart';
 import '../data/stream_resolver.dart';
@@ -19,8 +20,10 @@ import '../models/app_models.dart';
 
 class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   static const _streamLoadTimeout = Duration(seconds: 10);
-  static const _resolveTimeout = Duration(seconds: 15);
-  static const _fallbackResolveTimeout = Duration(seconds: 8);
+  static const _serverResolveFastTimeout = Duration(seconds: 5);
+  static const _itunesPreviewLookupTimeout = Duration(milliseconds: 1500);
+  static const _fallbackResolveTimeout = Duration(seconds: 22);
+  static const _queueSkipLookahead = 8;
 
   JojoAudioHandler({
     required AppEnvironment environment,
@@ -30,6 +33,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
        _player = ja.AudioPlayer() {
     _api = ApiService(environment: _environment);
     _localResolver = LocalStreamResolver();
+    _itunesPreviewResolver = ItunesPreviewResolver();
     _ytClient = YtMusicClient();
     _lrclibService = LrclibService();
     _sponsorBlockService = SponsorBlockService();
@@ -40,8 +44,16 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       }
     });
     _subPosition = _player.positionStream.listen((position) {
+      final currentState = playbackState.value;
+      final playerState = _player.playerState;
+      if (currentState.processingState == AudioProcessingState.error &&
+          _player.playing &&
+          playerState.processingState == ja.ProcessingState.ready) {
+        _broadcastState(playerState);
+        return;
+      }
       playbackState.add(
-        playbackState.value.copyWith(
+        currentState.copyWith(
           updatePosition: position,
           bufferedPosition: _player.bufferedPosition,
         ),
@@ -50,7 +62,9 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       if (_sponsorBlockEnabled) _checkSponsorSegment(position);
       if (_crossfadeEnabled) _maybeTriggerCrossfade(position);
     });
-    _subProcessingState = _player.processingStateStream.distinct().listen((state) {
+    _subProcessingState = _player.processingStateStream.distinct().listen((
+      state,
+    ) {
       if (state == ja.ProcessingState.completed) {
         unawaited(_handleQueueCompletion());
       }
@@ -61,7 +75,9 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     _subPlaybackEvent = _player.playbackEventStream.listen((event) {
       _syncActiveAudioSource(forcePublish: true);
     });
-    _subCurrentIndex = _player.currentIndexStream.distinct().listen(_handleNativeCurrentIndex);
+    _subCurrentIndex = _player.currentIndexStream.distinct().listen(
+      _handleNativeCurrentIndex,
+    );
     _subSequenceState = _player.sequenceStateStream.listen((sequence) {
       _syncNativeSequenceState(sequence, forcePublish: true);
     });
@@ -94,6 +110,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   final ja.AudioPlayer _player;
   late ApiService _api;
   late LocalStreamResolver _localResolver;
+  late ItunesPreviewResolver _itunesPreviewResolver;
   ConvexService? _convexService;
   String? _convexUserId;
   DateTime? _lastConvexPositionSync;
@@ -119,7 +136,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   int _nativeQueueBaseIndex = 0;
   int _nativeQueuePreparedUntil = -1;
   bool _isLoadingTrack = false;
-  bool _isHandlingCompletion = false; // BUG #10 fix: re-entry guard
+  bool _isHandlingCompletion = false;
   Future<void> _playerMutationChain = Future<void>.value();
 
   late LrclibService _lrclibService;
@@ -147,6 +164,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
 
   final Map<String, Future<ResolvedStream>> _resolveInFlight = {};
   final Map<String, _CachedResolvedStream> _resolvedStreamCache = {};
+  final Map<String, String?> _resolvedSourceByTrackKey = {};
+  String? _currentResolvedSource;
 
   Future<void> loadQueue(
     List<Track> tracks, {
@@ -218,6 +237,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     String? artworkUrl,
     int? durationMs,
   }) async {
+    if (sourceUrl.trim().isEmpty) {
+      _broadcastLoadError(Exception('URL audio non disponible pour "$title"'));
+      return;
+    }
     _isLoadingTrack = true;
     final loadGeneration = ++_loadGeneration;
     ++_completionCallToken;
@@ -262,6 +285,11 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         await _player.play();
         _broadcastState(_player.playerState);
       });
+    } catch (error) {
+      if (loadGeneration == _loadGeneration) {
+        _broadcastLoadError(error);
+      }
+      rethrow;
     } finally {
       if (loadGeneration == _loadGeneration) {
         _isLoadingTrack = false;
@@ -373,7 +401,11 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     await _loadAt(index);
   }
 
-  Future<void> _loadAt(int index) async {
+  Future<void> _loadAt(
+    int index, {
+    Duration? initialPosition,
+    bool broadcastErrors = true,
+  }) async {
     if (index < 0 || index >= _queueTracks.length) {
       return;
     }
@@ -387,6 +419,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     // pointing at a valid (previously playing) track rather than a broken one.
     final previousIndex = _currentIndex;
     _currentIndex = index;
+    _currentResolvedSource = null;
     _completionGuardTrackKey = null;
     _completionGuardAt = null;
     _pauseRequestedManually = false;
@@ -396,16 +429,37 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     try {
       await _interruptCurrentPlayback();
       if (loadGeneration != _loadGeneration) return;
+      // Emit without artwork immediately so the player UI appears during loading.
+      // Artwork is intentionally omitted here to avoid triggering a preloadArtwork
+      // download that would race with the authoritative emit after play().
+      mediaItem.add(
+        MediaItem(
+          id: _mediaItemId(track, index: index),
+          title: track.title,
+          artist: track.artist,
+          album: track.album,
+          duration: track.durationMs == null
+              ? null
+              : Duration(milliseconds: track.durationMs!),
+          extras: {
+            'track_key': track.trackKey,
+            'queue_index': index,
+            if (track.externalId != null) 'external_id': track.externalId,
+            if (track.provider.isNotEmpty) 'provider': track.provider,
+          },
+        ),
+      );
       _broadcastLoadingState();
-      // BUG #1 fix: do NOT publish mediaItem here — wait until setAudioSources succeeds.
       final ja.AudioSource audioSource;
       try {
         audioSource = await _audioSourceForTrack(index, track);
       } catch (error) {
-        if (loadGeneration == _loadGeneration) {
+        if (broadcastErrors && loadGeneration == _loadGeneration) {
           _broadcastLoadError(error);
           // BUG #13 fix: restore the previous index on stream-resolution failure
           // so _currentIndex does not point at a broken track.
+          _currentIndex = previousIndex;
+        } else if (loadGeneration == _loadGeneration) {
           _currentIndex = previousIndex;
         }
         throw TrackLoadException(track: track, cause: error);
@@ -419,12 +473,13 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       _lastProgressAt = DateTime.now();
       _trackStartTime = DateTime.now();
 
+      final startPosition = initialPosition ?? Duration.zero;
       try {
         await _player
             .setAudioSources(
               [audioSource],
               initialIndex: 0,
-              initialPosition: Duration.zero,
+              initialPosition: startPosition,
             )
             .timeout(_streamLoadTimeout);
       } on ja.PlayerInterruptedException {
@@ -443,25 +498,45 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
               .setAudioSources(
                 [refreshedSource],
                 initialIndex: 0,
-                initialPosition: Duration.zero,
+                initialPosition: startPosition,
               )
               .timeout(_streamLoadTimeout);
         } on ja.PlayerInterruptedException {
           return;
         } catch (retryError) {
-          if (loadGeneration == _loadGeneration) {
-            _broadcastLoadError(
-              retryError is TimeoutException ? retryError : error,
+          try {
+            final previewSource = await _audioSourceForTrack(
+              index,
+              track,
+              forcePreview: true,
             );
-            // BUG #13 fix: restore the previous index so _currentIndex does not
-            // point at a track that failed to load. Only restore when we are
-            // still the active generation (a newer _loadAt will set its own index).
-            _currentIndex = previousIndex;
+            if (loadGeneration != _loadGeneration) return;
+            await _player
+                .setAudioSources(
+                  [previewSource],
+                  initialIndex: 0,
+                  initialPosition: startPosition,
+                )
+                .timeout(_streamLoadTimeout);
+          } on ja.PlayerInterruptedException {
+            return;
+          } catch (_) {
+            if (broadcastErrors && loadGeneration == _loadGeneration) {
+              _broadcastLoadError(
+                retryError is TimeoutException ? retryError : error,
+              );
+              // BUG #13 fix: restore the previous index so _currentIndex does not
+              // point at a track that failed to load. Only restore when we are
+              // still the active generation (a newer _loadAt will set its own index).
+              _currentIndex = previousIndex;
+            } else if (loadGeneration == _loadGeneration) {
+              _currentIndex = previousIndex;
+            }
+            throw TrackLoadException(
+              track: track,
+              cause: retryError is TimeoutException ? retryError : error,
+            );
           }
-          throw TrackLoadException(
-            track: track,
-            cause: retryError is TimeoutException ? retryError : error,
-          );
         }
       }
 
@@ -470,16 +545,16 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       _nativeQueuePreparedUntil = index;
       final newMediaItem = _toMediaItem(_queueTracks[index], index: index);
       queue.add(_buildQueueMediaItems());
-      mediaItem.add(newMediaItem);
       _broadcastState(_player.playerState);
       unawaited(preloadLyricsForTrack(track));
-      unawaited(_prepareNativeUpcoming(index, loadGeneration));
+      if (!_isCurrentResolvedPreview) {
+        unawaited(_prepareNativeUpcoming(index, loadGeneration));
+      }
       final videoId = track.externalId ?? track.trackKey;
       if (_sponsorBlockEnabled &&
           RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(videoId)) {
         unawaited(_loadSponsorSegments(videoId));
       } else {
-        // BUG #9 fix: log when SponsorBlock is skipped so failures are visible.
         if (_sponsorBlockEnabled) {
           debugPrint(
             '[SponsorBlock] skipped — videoId "$videoId" does not match YouTube ID pattern',
@@ -491,13 +566,24 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         if (_crossfadeEnabled) _startFadeIn();
         await _player.play();
       }
-      // Re-emit mediaItem after play() so audio_service pushes metadata to iOS
-      // Now Playing while the session is active (playing: true). Without this,
-      // iOS may ignore the metadata update that happened during loading state.
+      // Emit mediaItem once, after play(), so the iOS audio session is active
+      // when audio_service calls setMediaItem. preloadArtwork:true downloads
+      // artwork synchronously before passing to iOS — a single emit here avoids
+      // concurrent downloads that can complete out of order.
       if (loadGeneration == _loadGeneration) {
         mediaItem.add(newMediaItem);
+        _broadcastState(_player.playerState);
       }
-      _broadcastState(_player.playerState);
+      // Second emit 600ms later for the gap between play() returning and iOS
+      // session being fully live (Control Center refresh window).
+      final capturedGen = loadGeneration;
+      final capturedItem = newMediaItem;
+      Future<void>.delayed(const Duration(milliseconds: 600), () {
+        if (_loadGeneration == capturedGen) {
+          mediaItem.add(capturedItem);
+          _broadcastState(_player.playerState);
+        }
+      });
     } finally {
       // BUG #8 fix: a stale generation (loadGeneration < _loadGeneration) must
       // NOT reset _isLoadingTrack because a newer _loadAt() already claimed it.
@@ -539,6 +625,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         updatePosition: Duration.zero,
         bufferedPosition: Duration.zero,
         queueIndex: _currentIndex < 0 ? null : _currentIndex,
+        errorCode: null,
+        errorMessage: null,
       ),
     );
   }
@@ -547,28 +635,70 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     int index,
     Track track, {
     bool forceRefresh = false,
+    bool forcePreview = false,
   }) async {
     final offline = await _database.findOfflineTrack(track.trackKey);
     final offlinePath = await _readyOfflinePath(offline);
-    final media = _toMediaItem(track, index: index);
     if (offlinePath != null) {
-      return ja.AudioSource.uri(Uri.file(offlinePath), tag: media);
+      return ja.AudioSource.uri(
+        Uri.file(offlinePath),
+        tag: _toMediaItem(track, index: index),
+      );
     }
 
     if (forceRefresh) {
       _resolvedStreamCache.remove(track.trackKey);
     }
-    final resolved = await _resolveTrack(track);
+    final ResolvedStream resolved;
+    if (forcePreview) {
+      final preview =
+          _previewResolvedStreamForTrack(track) ??
+          await _itunesPreviewResolver
+              .resolve(track)
+              .timeout(_itunesPreviewLookupTimeout, onTimeout: () => null)
+              .catchError((_) => null);
+      if (preview == null) {
+        throw FormatException('preview audio unavailable: ${track.trackKey}');
+      }
+      resolved = preview;
+      _cacheResolvedTrack(track, resolved);
+    } else {
+      resolved = await _resolveTrack(track, reuseInFlight: false);
+    }
     if (resolved.thumbnailUrl != null) {
       resolvedArtworkCache[track.trackKey] = resolved.thumbnailUrl!;
     }
+    _resolvedSourceByTrackKey[track.trackKey] = resolved.source;
     if (index == _currentIndex) {
+      _currentResolvedSource = resolved.source;
       _syncCurrentTrackMetadata(
         artworkUrl: resolved.thumbnailUrl,
         durationMs: resolved.durationMs,
       );
+    } else if (index >= 0 && index < _queueTracks.length) {
+      // Pre-populate resolved artwork + duration into _queueTracks for upcoming
+      // tracks. This ensures that when gapless advance fires _publishQueueIndex,
+      // _toMediaItem reads the correct artwork and duration — not null/stale values.
+      final t = _queueTracks[index];
+      Track updated = t;
+      if (resolved.thumbnailUrl != null && t.artworkUrl == null) {
+        updated = updated.copyWith(artworkUrl: resolved.thumbnailUrl);
+      }
+      if (resolved.durationMs != null && t.durationMs == null) {
+        updated = updated.copyWith(durationMs: resolved.durationMs);
+      }
+      if (!identical(updated, t)) _queueTracks[index] = updated;
     }
-    return ja.AudioSource.uri(_streamUri(resolved.streamUrl), tag: media);
+    // Build tag from the (now-updated) track data so the native AudioSource tag
+    // carries the resolved artwork URI — read by _syncNativeSequenceState on
+    // gapless advance to route the correct queue index.
+    final tagTrack = (index >= 0 && index < _queueTracks.length)
+        ? _queueTracks[index]
+        : track;
+    return ja.AudioSource.uri(
+      _streamUri(resolved.streamUrl),
+      tag: _toMediaItem(tagTrack, index: index),
+    );
   }
 
   Uri _streamUri(String source) {
@@ -667,6 +797,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
 
     _recordPlaybackEvent('completed');
     _currentIndex = queueIndex;
+    _currentResolvedSource =
+        _resolvedSourceByTrackKey[_queueTracks[queueIndex].trackKey];
     _completionGuardTrackKey = null;
     _completionGuardAt = null;
     _lastProgressTrackKey = _queueTracks[queueIndex].trackKey;
@@ -684,7 +816,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   Future<void> _prepareNativeUpcoming(int index, int loadGeneration) async {
     final targetIndex = (index + 3).clamp(0, _queueTracks.length - 1);
     if (targetIndex <= _nativeQueuePreparedUntil) {
-      if (_autoplayEnabled && index >= 0 && index < _queueTracks.length && _queueTracks.length - index <= 3) {
+      if (_autoplayEnabled &&
+          index >= 0 &&
+          index < _queueTracks.length &&
+          _queueTracks.length - index <= 3) {
         unawaited(_ensureAutoplayTail(seed: _queueTracks[index]));
       }
       return;
@@ -695,7 +830,13 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     for (var i = _nativeQueuePreparedUntil + 1; i <= targetIndex; i++) {
       if (loadGeneration != _loadGeneration) return;
       try {
-        sources.add(await _audioSourceForTrack(i, _queueTracks[i]));
+        final source = await _audioSourceForTrack(i, _queueTracks[i]);
+        if (_isPreviewSource(
+          _resolvedSourceByTrackKey[_queueTracks[i].trackKey],
+        )) {
+          break;
+        }
+        sources.add(source);
         preparedUntil = i;
       } catch (_) {
         break;
@@ -708,7 +849,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       } catch (_) {}
     }
 
-    if (_autoplayEnabled && index >= 0 && index < _queueTracks.length && _queueTracks.length - index <= 3) {
+    if (_autoplayEnabled &&
+        index >= 0 &&
+        index < _queueTracks.length &&
+        _queueTracks.length - index <= 3) {
       await _ensureAutoplayTail(seed: _queueTracks[index]);
       if (loadGeneration == _loadGeneration &&
           _queueTracks.length - 1 > _nativeQueuePreparedUntil) {
@@ -727,7 +871,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         // mutation chain permanently.
         await action().timeout(
           const Duration(seconds: 30),
-          onTimeout: () => throw TimeoutException('_mutatePlayer action timeout'),
+          onTimeout: () =>
+              throw TimeoutException('_mutatePlayer action timeout'),
         );
         completer.complete();
       } catch (error, stackTrace) {
@@ -835,36 +980,132 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     return 'm4a';
   }
 
-  Future<ResolvedStream> _resolveTrack(Track track) {
+  Future<ResolvedStream> _resolveTrack(
+    Track track, {
+    bool reuseInFlight = true,
+  }) {
     final cached = _resolvedStreamCache[track.trackKey];
     if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
       return Future.value(cached.stream);
     }
 
-    final inFlight = _resolveInFlight[track.trackKey];
-    if (inFlight != null) return inFlight;
+    if (reuseInFlight) {
+      final inFlight = _resolveInFlight[track.trackKey];
+      if (inFlight != null) return inFlight;
+    }
 
     final future = _doResolveTrack(track);
     _resolveInFlight[track.trackKey] = future;
-    return future.whenComplete(() => _resolveInFlight.remove(track.trackKey));
+    return future.whenComplete(() {
+      if (identical(_resolveInFlight[track.trackKey], future)) {
+        _resolveInFlight.remove(track.trackKey);
+      }
+    });
   }
 
   Future<ResolvedStream> _doResolveTrack(Track track) async {
     try {
-      final resolved = await _api.resolveTrack(track).timeout(_resolveTimeout);
+      final resolved = await _resolveBackendAndLocal(track);
       _cacheResolvedTrack(track, resolved);
       return resolved;
     } catch (_) {
-      final resolved = await _localResolver
+      final preview = _previewResolvedStreamForTrack(track);
+      if (preview != null) {
+        _cacheResolvedTrack(track, preview);
+        return preview;
+      }
+
+      final itunesPreview = await _itunesPreviewResolver
           .resolve(track)
-          .timeout(_fallbackResolveTimeout);
-      _cacheResolvedTrack(track, resolved);
-      return resolved;
+          .timeout(_itunesPreviewLookupTimeout, onTimeout: () => null)
+          .catchError((_) => null);
+      if (itunesPreview != null) {
+        _cacheResolvedTrack(track, itunesPreview);
+        return itunesPreview;
+      }
+      rethrow;
     }
   }
 
+  Future<ResolvedStream> _resolveBackendAndLocal(Track track) {
+    final completer = Completer<ResolvedStream>();
+    final errors = <Object>[];
+    ResolvedStream? previewFallback;
+    var pending = 2;
+
+    void completeWith(ResolvedStream resolved) {
+      pending -= 1;
+      if (completer.isCompleted) return;
+      if (!_isPreviewStream(resolved)) {
+        completer.complete(resolved);
+        return;
+      }
+      previewFallback ??= resolved;
+      if (pending == 0) {
+        completer.complete(previewFallback!);
+      }
+    }
+
+    void fail(Object error) {
+      errors.add(error);
+      pending -= 1;
+      if (pending == 0 && !completer.isCompleted) {
+        final fallback = previewFallback;
+        if (fallback != null) {
+          completer.complete(fallback);
+        } else {
+          completer.completeError(errors.first);
+        }
+      }
+    }
+
+    unawaited(() async {
+      try {
+        final resolved = await _api
+            .resolveTrack(track)
+            .timeout(_serverResolveFastTimeout);
+        completeWith(resolved);
+      } catch (error) {
+        fail(error);
+      }
+    }());
+    unawaited(() async {
+      try {
+        final resolved = await _localResolver
+            .resolve(track)
+            .timeout(_fallbackResolveTimeout);
+        completeWith(resolved);
+      } catch (error) {
+        fail(error);
+      }
+    }());
+
+    return completer.future;
+  }
+
+  ResolvedStream? _previewResolvedStreamForTrack(Track track) {
+    final previewUrl = track.previewUrl?.trim();
+    if (previewUrl == null || previewUrl.isEmpty) {
+      return null;
+    }
+    final uri = Uri.tryParse(previewUrl);
+    if (uri == null || !uri.hasScheme) {
+      return null;
+    }
+    return ResolvedStream(
+      streamUrl: previewUrl,
+      title: track.title,
+      artist: track.artist,
+      source: 'itunes_preview',
+      thumbnailUrl: track.artworkUrl ?? track.artistImageUrl,
+      durationMs: null,
+    );
+  }
+
   void _cacheResolvedTrack(Track track, ResolvedStream resolved) {
-    final ttl = _isManagedMediaUrl(resolved.streamUrl)
+    final ttl = _isPreviewStream(resolved)
+        ? const Duration(seconds: 10)
+        : _isManagedMediaUrl(resolved.streamUrl)
         ? const Duration(hours: 5)
         : const Duration(minutes: 1);
     _resolvedStreamCache[track.trackKey] = _CachedResolvedStream(
@@ -878,6 +1119,15 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     return url.startsWith('/api/v1/media/') || url.startsWith(mediaBase);
   }
 
+  bool _isPreviewStream(ResolvedStream stream) =>
+      _isPreviewSource(stream.source);
+
+  bool get _isCurrentResolvedPreview =>
+      _isPreviewSource(_currentResolvedSource);
+
+  bool _isPreviewSource(String? source) =>
+      source?.endsWith('_preview') ?? false;
+
   Future<void> _prefetchQueueAround(int index) async {
     for (final offset in [1, 2]) {
       final nextIndex = index + offset;
@@ -885,7 +1135,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         unawaited(_resolveTrack(_queueTracks[nextIndex]));
       }
     }
-    if (_autoplayEnabled && index >= 0 && index < _queueTracks.length && _queueTracks.length - index <= 3) {
+    if (_autoplayEnabled &&
+        index >= 0 &&
+        index < _queueTracks.length &&
+        _queueTracks.length - index <= 3) {
       unawaited(_ensureAutoplayTail(seed: _queueTracks[index]));
     }
   }
@@ -895,17 +1148,29 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     // watchdog timer can both fire for the same completion event).
     if (_isHandlingCompletion) return;
     _isHandlingCompletion = true;
-    // BUG #5 fix: capture track and position BEFORE any async work so that
-    // the event is recorded for the track that actually completed, not the
-    // next one that may already be loading.
-    // BUG #6 fix: use _player.position (synchronous, always current) instead
-    // of playbackState.value.position (may be stale).
     final completingTrack = currentTrack;
     final completingPositionMs = _player.position.inMilliseconds;
-    // Enregistre l'événement de complétion dans Convex (fire-and-forget)
-    _recordPlaybackEventForTrack('completed', completingTrack, completingPositionMs);
+    _recordPlaybackEventForTrack(
+      'completed',
+      completingTrack,
+      completingPositionMs,
+    );
+    if (_isCurrentResolvedPreview) {
+      _broadcastState(_player.playerState);
+      _isHandlingCompletion = false;
+      return;
+    }
     final token = ++_completionCallToken;
     try {
+      // Race guard: if gapless has upcoming tracks prepared, wait 350 ms for
+      // currentIndexStream to fire. If _currentIndex advances in that window,
+      // gapless handled the transition — bail out. If not, gapless failed
+      // silently (expired URL, iOS throttled) — fall through and hard-load.
+      if (_nativeQueuePreparedUntil > _currentIndex) {
+        final capturedIndex = _currentIndex;
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        if (_currentIndex != capturedIndex) return;
+      }
       if (_repeatMode == AudioServiceRepeatMode.one) {
         await _player.seek(Duration.zero);
         unawaited(_player.play());
@@ -952,11 +1217,11 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   Future<void> _tryLoadNext(int token) async {
-    // Try up to 3 consecutive tracks starting from the next one.
+    // Try several consecutive tracks starting from the next one.
     // If a track fails to load (network / stream error), skip it and try the
     // next one rather than stopping — this prevents silence mid-playlist.
     final startIndex = _currentIndex + 1;
-    for (int skip = 0; skip < 3; skip++) {
+    for (int skip = 0; skip < _queueSkipLookahead; skip++) {
       final candidateIndex = startIndex + skip;
       if (candidateIndex >= _queueTracks.length) break;
       if (_completionCallToken != token) return;
@@ -964,7 +1229,7 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       for (int attempt = 0; attempt < 2; attempt++) {
         if (_completionCallToken != token) return;
         try {
-          await _loadAt(candidateIndex);
+          await _loadAt(candidateIndex, broadcastErrors: false);
           return;
         } catch (_) {
           // _loadAt increments _completionCallToken once at its start.
@@ -1015,6 +1280,25 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   void _watchdogForCompletion() {
     if (_pauseRequestedManually || _isLoadingTrack) {
       return;
+    }
+    // Safety net: if the sequenceStateStream subscription missed a gapless
+    // advance event, the native player is already on the next track but
+    // _currentIndex still points to the old one. Detect this by comparing the
+    // tag on the currently-playing AudioSource against _currentIndex and call
+    // _syncNativeSequenceState to recover. This fires at most every 900 ms so
+    // it's a cheap catch-all for any missed subscription delivery.
+    if (!_isLoadingTrack) {
+      final seq = _player.sequenceState;
+      final tag = seq.currentSource?.tag;
+      if (tag is MediaItem) {
+        final tagIndex = _queueIndexForMediaItem(
+          tag,
+          nativeIndex: seq.currentIndex,
+        );
+        if (tagIndex != null && tagIndex != _currentIndex) {
+          _syncNativeSequenceState(seq, forcePublish: true);
+        }
+      }
     }
     final track = currentTrack;
     final duration = _effectiveTrackDuration();
@@ -1090,9 +1374,15 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     if (looksStalledMidTrack) {
       unawaited(_player.play());
     } else if (looksDeadMidTrack) {
-      // Re-resolve stream from scratch (clears hung mutation chain too).
+      // Re-resolve stream from scratch (URL expired / network cut).
+      // Use _lastProgressPositionMs (updated every 900ms while playing) as the
+      // resume position because _player.position may already be 0 in idle state.
       _playerMutationChain = Future<void>.value();
-      unawaited(_loadAt(_currentIndex));
+      final lastKnownMs = _lastProgressPositionMs ?? 0;
+      final resumeAt = lastKnownMs > 500
+          ? Duration(milliseconds: lastKnownMs)
+          : null;
+      unawaited(_loadAt(_currentIndex, initialPosition: resumeAt));
     } else {
       // BUG #10 fix: skip if _handleQueueCompletion is already running to
       // prevent the second watchdog tick from racing into it concurrently.
@@ -1217,6 +1507,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       'queue_index': index,
       if (track.externalId != null) 'external_id': track.externalId,
       if (track.provider.isNotEmpty) 'provider': track.provider,
+      if (_resolvedSourceByTrackKey[track.trackKey] != null)
+        'resolved_source': _resolvedSourceByTrackKey[track.trackKey],
       if (track.displayArtworkUrl != null)
         'artwork_url': track.displayArtworkUrl,
     },
@@ -1242,6 +1534,10 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     final updatedQueue = _buildQueueMediaItems();
     queue.add(updatedQueue);
     mediaItem.add(updatedQueue[_currentIndex]);
+    // Also refresh playbackState so the UI position/duration display updates
+    // atomically with the new duration — without this the slider stays at
+    // 0:00 / 0:00 until the next positionStream tick.
+    _broadcastState(_player.playerState);
   }
 
   void _broadcastState(ja.PlayerState state) {
@@ -1270,6 +1566,8 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
             ? AudioServiceShuffleMode.all
             : AudioServiceShuffleMode.none,
         repeatMode: _repeatMode,
+        errorCode: null,
+        errorMessage: null,
       ),
     );
     // Sync play/pause vers Convex (throttlé côté _syncPlaybackState)
@@ -1290,11 +1588,19 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         updatePosition: Duration.zero,
         bufferedPosition: Duration.zero,
         queueIndex: _currentIndex < 0 ? null : _currentIndex,
+        errorCode: null,
+        errorMessage: null,
       ),
     );
   }
 
   void _broadcastLoadError(Object error) {
+    if (_player.playing &&
+        _player.audioSource != null &&
+        _player.processingState == ja.ProcessingState.ready) {
+      _broadcastState(_player.playerState);
+      return;
+    }
     playbackState.add(
       playbackState.value.copyWith(
         controls: const [
@@ -1358,14 +1664,16 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     if (_nativeQueuePreparedUntil > _currentIndex) {
       final currentNativeIndex = _currentIndex - _nativeQueueBaseIndex;
       final preparedCount = _nativeQueuePreparedUntil - _currentIndex;
-      unawaited(_mutatePlayer(() async {
-        for (var i = preparedCount; i >= 1; i--) {
-          try {
-            await _player.removeAudioSourceAt(currentNativeIndex + i);
-          } catch (_) {}
-        }
-        _nativeQueuePreparedUntil = _currentIndex;
-      }));
+      unawaited(
+        _mutatePlayer(() async {
+          for (var i = preparedCount; i >= 1; i--) {
+            try {
+              await _player.removeAudioSourceAt(currentNativeIndex + i);
+            } catch (_) {}
+          }
+          _nativeQueuePreparedUntil = _currentIndex;
+        }),
+      );
     }
   }
 
@@ -1406,13 +1714,16 @@ class JojoAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     } catch (error) {
       // BUG #9 fix: log SponsorBlock fetch failures so they are visible in
       // debug output rather than silently degrading.
-      debugPrint('[SponsorBlock] failed to load segments for "$videoId": $error');
+      debugPrint(
+        '[SponsorBlock] failed to load segments for "$videoId": $error',
+      );
       _currentSegments = [];
     }
   }
 
   void _maybeTriggerCrossfade(Duration position) {
     if (_crossfadeTimer != null) return;
+    if (_isCurrentResolvedPreview) return;
     final duration = _effectiveTrackDuration();
     if (duration == null || !_player.playing) return;
     final remaining = duration - position;

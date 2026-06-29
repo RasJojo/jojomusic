@@ -35,6 +35,7 @@ class ShellScreen extends ConsumerStatefulWidget {
 class _ShellScreenState extends ConsumerState<ShellScreen> {
   final _searchController = TextEditingController();
   AsyncValue<SearchResult>? _searchState;
+  AsyncValue<YtSearchResult>? _ytSearchState;
   Timer? _searchDebounce;
   bool _isSearching = false;
   String _searchingQuery = '';
@@ -71,6 +72,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
         active: selectedIndex == 1,
         searchController: _searchController,
         searchState: _searchState,
+        ytSearchState: _ytSearchState,
         searchingQuery: _searchingQuery,
         isSearching: _isSearching,
         onClearSearch: _clearSearch,
@@ -78,6 +80,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
         onQueryChanged: _scheduleSearch,
         onAlbumSelected: _openAlbum,
         onArtistSelected: _openArtist,
+        onYtArtistSelected: _openYtArtist,
         onPlaylistSelected: _openPlaylist,
         onPodcastSelected: _openPodcast,
         onTrackAction: _showTrackActions,
@@ -101,6 +104,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
     if (query.isEmpty) {
       setState(() {
         _searchState = null;
+        _ytSearchState = null;
         _isSearching = false;
         _searchingQuery = '';
       });
@@ -112,9 +116,16 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
       _searchingQuery = query;
       _searchState ??= const AsyncLoading();
     });
-    final result = await AsyncValue.guard(
-      () => ref.read(apiProvider).search(query),
-    );
+
+    AsyncValue<SearchResult>? backendResult;
+    AsyncValue<YtSearchResult>? ytResult;
+    await Future.wait([
+      AsyncValue.guard(() => ref.read(apiProvider).search(query))
+          .then((v) => backendResult = v),
+      AsyncValue.guard(() => ref.read(ytMusicClientProvider).search(query))
+          .then((v) => ytResult = v),
+    ]);
+
     if (!mounted || requestId != _searchRequestId) {
       return;
     }
@@ -122,7 +133,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
       return;
     }
     setState(() {
-      _searchState = result;
+      _searchState = backendResult;
+      _ytSearchState = ytResult;
       _isSearching = false;
       _searchingQuery = query;
     });
@@ -135,6 +147,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
     if (mounted) {
       setState(() {
         _searchState = null;
+        _ytSearchState = null;
         _isSearching = false;
         _searchingQuery = '';
       });
@@ -193,13 +206,10 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
   }
 
   void _openAlbum(Album album) {
-    _openYtAlbum(
-      YtAlbum(
-        browseId: album.externalId ?? '',
-        title: album.title,
-        artist: album.artist,
-        artworkUrl: album.artworkUrl,
-        year: album.releaseDate != null ? '${album.releaseDate!.year}' : null,
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            AlbumScreen(album: album, onTrackAction: _showTrackActions),
       ),
     );
   }
@@ -554,6 +564,7 @@ class _SearchTab extends ConsumerWidget {
     required this.active,
     required this.searchController,
     required this.searchState,
+    required this.ytSearchState,
     required this.searchingQuery,
     required this.isSearching,
     required this.onClearSearch,
@@ -561,6 +572,7 @@ class _SearchTab extends ConsumerWidget {
     required this.onQueryChanged,
     required this.onAlbumSelected,
     required this.onArtistSelected,
+    required this.onYtArtistSelected,
     required this.onPlaylistSelected,
     required this.onPodcastSelected,
     required this.onTrackAction,
@@ -569,6 +581,7 @@ class _SearchTab extends ConsumerWidget {
   final bool active;
   final TextEditingController searchController;
   final AsyncValue<SearchResult>? searchState;
+  final AsyncValue<YtSearchResult>? ytSearchState;
   final String searchingQuery;
   final bool isSearching;
   final VoidCallback onClearSearch;
@@ -576,6 +589,7 @@ class _SearchTab extends ConsumerWidget {
   final ValueChanged<String> onQueryChanged;
   final ValueChanged<Album> onAlbumSelected;
   final ValueChanged<Artist> onArtistSelected;
+  final ValueChanged<YtArtist> onYtArtistSelected;
   final ValueChanged<Playlist> onPlaylistSelected;
   final ValueChanged<Podcast> onPodcastSelected;
   final Future<void> Function(
@@ -647,9 +661,11 @@ class _SearchTab extends ConsumerWidget {
           searchState!.when(
             data: (data) => _SearchResultsContent(
               result: data,
+              ytResult: ytSearchState?.asData?.value,
               playlists: matchingPlaylists,
               onAlbumSelected: onAlbumSelected,
               onArtistSelected: onArtistSelected,
+              onYtArtistSelected: onYtArtistSelected,
               onPlaylistSelected: onPlaylistSelected,
               onPodcastSelected: onPodcastSelected,
               onTrackAction: onTrackAction,
@@ -695,15 +711,19 @@ class _SearchResultsContent extends StatelessWidget {
     required this.playlists,
     required this.onAlbumSelected,
     required this.onArtistSelected,
+    required this.onYtArtistSelected,
     required this.onPlaylistSelected,
     required this.onPodcastSelected,
     required this.onTrackAction,
+    this.ytResult,
   });
 
   final SearchResult result;
+  final YtSearchResult? ytResult;
   final List<Playlist> playlists;
   final ValueChanged<Album> onAlbumSelected;
   final ValueChanged<Artist> onArtistSelected;
+  final ValueChanged<YtArtist> onYtArtistSelected;
   final ValueChanged<Playlist> onPlaylistSelected;
   final ValueChanged<Podcast> onPodcastSelected;
   final Future<void> Function(
@@ -715,11 +735,19 @@ class _SearchResultsContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (result.tracks.isEmpty &&
-        result.artists.isEmpty &&
-        result.albums.isEmpty &&
-        result.podcasts.isEmpty &&
-        playlists.isEmpty) {
+    final ytTracks = (ytResult?.tracks ?? []).map((t) => t.toTrack()).toList();
+    final ytArtists = ytResult?.artists ?? [];
+
+    final displayTracks = ytTracks.isNotEmpty ? ytTracks : result.tracks;
+
+    final hasResults = displayTracks.isNotEmpty ||
+        ytArtists.isNotEmpty ||
+        result.artists.isNotEmpty ||
+        result.albums.isNotEmpty ||
+        result.podcasts.isNotEmpty ||
+        playlists.isNotEmpty;
+
+    if (!hasResults) {
       return const JojoStateMessage(
         icon: Icons.search_off_rounded,
         message: 'Aucun résultat pour cette recherche.',
@@ -729,16 +757,22 @@ class _SearchResultsContent extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (result.tracks.isNotEmpty) ...[
+        if (displayTracks.isNotEmpty) ...[
           _TrackSection(
             title: 'Titres',
             subtitle: 'Résultats pour cette recherche.',
-            tracks: result.tracks,
+            tracks: displayTracks,
             onTrackAction: onTrackAction,
           ),
           const SizedBox(height: 18),
         ],
-        if (result.artists.isNotEmpty) ...[
+        if (ytArtists.isNotEmpty) ...[
+          _YtArtistResultsSection(
+            artists: ytArtists,
+            onArtistSelected: onYtArtistSelected,
+          ),
+          const SizedBox(height: 18),
+        ] else if (result.artists.isNotEmpty) ...[
           _ArtistResultsSection(
             artists: result.artists,
             onArtistSelected: onArtistSelected,
@@ -821,6 +855,47 @@ class _SearchDiscoveryState extends StatelessWidget {
             ),
           ),
         ],
+      ],
+    );
+  }
+}
+
+class _YtArtistResultsSection extends StatelessWidget {
+  const _YtArtistResultsSection({
+    required this.artists,
+    required this.onArtistSelected,
+  });
+
+  final List<YtArtist> artists;
+  final ValueChanged<YtArtist> onArtistSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const JojoSectionHeading(title: 'Artistes'),
+        const SizedBox(height: 14),
+        SizedBox(
+          height: 220,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: artists.length,
+            separatorBuilder: (context, index) => const SizedBox(width: 14),
+            itemBuilder: (context, index) {
+              final artist = artists[index];
+              return JojoPosterCard(
+                title: artist.name,
+                subtitle: artist.subscribers,
+                artworkUrl: artist.imageUrl,
+                width: 148,
+                height: 120,
+                circularArtwork: true,
+                onTap: () => onArtistSelected(artist),
+              );
+            },
+          ),
+        ),
       ],
     );
   }
@@ -1074,16 +1149,7 @@ class _LibraryTab extends ConsumerWidget {
                               onTap: () => Navigator.of(context).push(
                                 MaterialPageRoute<void>(
                                   builder: (_) => AlbumScreen(
-                                    ytAlbum: YtAlbum(
-                                      browseId:
-                                          album.externalId ?? album.albumKey,
-                                      title: album.title,
-                                      artist: album.artist,
-                                      artworkUrl: album.artworkUrl,
-                                      year: album.releaseDate != null
-                                          ? '${album.releaseDate!.year}'
-                                          : null,
-                                    ),
+                                    album: album,
                                     onTrackAction: onTrackAction,
                                   ),
                                 ),

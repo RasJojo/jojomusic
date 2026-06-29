@@ -1,5 +1,6 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
+import 'package:background_downloader/background_downloader.dart';
 import 'package:convex_flutter/convex_flutter.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -46,6 +47,8 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       final environment = AppEnvironment.fromPlatform();
       final database = AppDatabase();
 
+      await FileDownloader().ready;
+
       // Initialisation du client Convex (singleton)
       await ConvexClient.initialize(
         ConvexConfig(
@@ -67,6 +70,12 @@ class _BootstrapAppState extends State<_BootstrapApp> {
                 androidNotificationChannelName: 'JojoMusique Playback',
                 androidStopForegroundOnPause: false,
                 androidResumeOnClick: true,
+                // Pre-download artwork to a local file before passing to iOS.
+                // Without this, audio_service downloads asynchronously and calls
+                // setMediaItem twice (once without art, once with), causing the
+                // iOS Control Center to show no artwork or the wrong artwork
+                // when tracks change quickly.
+                preloadArtwork: true,
               ),
             );
 
