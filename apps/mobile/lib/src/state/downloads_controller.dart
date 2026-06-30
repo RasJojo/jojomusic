@@ -1,11 +1,12 @@
 import 'dart:io';
 
-import 'package:dio/dio.dart';
+import 'package:background_downloader/background_downloader.dart';
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../data/app_database.dart';
+import '../data/stream_resolver.dart';
 import '../models/app_models.dart';
 import 'providers.dart';
 
@@ -19,38 +20,24 @@ final downloadedPlaylistIdsProvider = StreamProvider<Set<String>>((ref) {
 
 final downloadsControllerProvider = Provider<DownloadsController>((ref) {
   final controller = DownloadsController(ref);
-  // BUG #5 fix: register dispose so the controller knows when to stop touching
-  // the database (Riverpod may tear down providers while a download is running).
   ref.onDispose(controller.dispose);
   return controller;
 });
 
 class DownloadsController {
-  // BUG #4 fix: use a non-const constructor so we can hold a shared Dio
-  // instance that is created once and closed on dispose.
-  DownloadsController(this.ref)
-      : _dio = Dio(
-          BaseOptions(
-            connectTimeout: const Duration(seconds: 25),
-            receiveTimeout: const Duration(minutes: 10),
-            sendTimeout: const Duration(seconds: 25),
-          ),
-        );
+  DownloadsController(this.ref) : _localResolver = LocalStreamResolver();
 
   final Ref ref;
-  // BUG #4 fix: shared Dio instance — created once, closed in dispose().
-  final Dio _dio;
-  // BUG #5 fix: lifecycle flag — set to true in dispose() so in-flight
-  // callbacks can bail out before touching the database.
+  final LocalStreamResolver _localResolver;
   bool _disposed = false;
   bool _syncInProgress = false;
-  static const _downloadRetryCount = 3;
+  static const _downloadRetryCount = 2;
   static const _betweenTrackDelay = Duration(milliseconds: 850);
+  static const _failedTrackCooldown = Duration(hours: 2);
 
   void dispose() {
     _disposed = true;
-    // BUG #4 fix: release the underlying HTTP client.
-    _dio.close(force: true);
+    _localResolver.dispose();
   }
 
   Future<void> togglePlaylistDownload({
@@ -121,7 +108,9 @@ class DownloadsController {
     }
   }
 
-  Future<void> _syncOfflineTracksInternal(Map<String, Track> desiredTracks) async {
+  Future<void> _syncOfflineTracksInternal(
+    Map<String, Track> desiredTracks,
+  ) async {
     final database = ref.read(appDatabaseProvider);
     final existingTracks = await database.getOfflineTracks();
     final documents = await getApplicationDocumentsDirectory();
@@ -130,23 +119,14 @@ class DownloadsController {
       await directory.create(recursive: true);
     }
 
-    // BUG #3 + #15 fix: the original code had two separate loops both reading
-    // from the same stale `existingByKey` snapshot taken before the first loop
-    // ran. The first loop wrote DB rows (upserts) whose fresh state was never
-    // reflected in the second loop's `existing` lookups.  Merge into one loop:
-    // for each desired track, check the DB, update metadata / mark as downloaded
-    // if the file already exists, or kick off a download otherwise.
     for (final entry in desiredTracks.entries) {
       final track = entry.value;
-      // Re-read the current DB row each iteration so we always see the freshest
-      // state (written by a previous iteration or a concurrent download).
       final existing = await database.findOfflineTrack(track.trackKey);
       final filePath =
           existing?.filePath ?? '${directory.path}/${track.trackKey}.m4a';
       final file = File(filePath);
 
       if (existing != null && await file.exists()) {
-        // File is present — refresh metadata and mark as downloaded.
         await database.upsertOfflineTrack(
           OfflineTracksCompanion.insert(
             trackKey: track.trackKey,
@@ -164,7 +144,14 @@ class DownloadsController {
         continue;
       }
 
-      // File does not exist yet — enqueue and download.
+      // Skip recently failed tracks to avoid hammering a source that keeps failing.
+      if (existing != null && existing.status == 'failed') {
+        final sinceFailure = DateTime.now().difference(existing.updatedAt);
+        if (sinceFailure < _failedTrackCooldown) {
+          continue;
+        }
+      }
+
       await database.upsertOfflineTrack(
         OfflineTracksCompanion.insert(
           trackKey: track.trackKey,
@@ -207,9 +194,6 @@ class DownloadsController {
         id: favoritesPlaylistId,
         name: 'Favoris',
         description: 'Tous les titres que tu as likés.',
-        // BUG #11 fix: displayArtworkUrl is nullable — pick the first track
-        // that actually has an artwork URL, falling back to the first track
-        // (which may still be null, which is fine for a nullable field).
         artworkUrl: likes
             .firstWhere(
               (t) => t.displayArtworkUrl != null,
@@ -232,30 +216,36 @@ class DownloadsController {
     ];
   }
 
+  /// Resolves the best stream URL for a track: backend first, YouTube fallback.
+  Future<String> _resolveStreamUrl(Track track) async {
+    try {
+      final api = ref.read(apiProvider);
+      final resolved = await api
+          .resolveTrack(track)
+          .timeout(const Duration(seconds: 10));
+      final url = resolved.streamUrl.trim();
+      if (url.isNotEmpty && resolved.source != 'preview') {
+        return url;
+      }
+    } catch (_) {}
+    // Backend unavailable or returned a preview — fall back to YouTube.
+    final resolved = await _localResolver
+        .resolve(track)
+        .timeout(const Duration(seconds: 40));
+    return resolved.streamUrl;
+  }
+
   Future<void> _downloadTrack({
     required Track track,
     required String outputPath,
   }) async {
-    // BUG #5 fix: bail out immediately if the controller has been disposed.
     if (_disposed) return;
-    // Delete any partial file from a previous attempt BEFORE starting the
-    // download so we never append to or corrupt a stale file. Use async delete
-    // to avoid blocking the main isolate on I/O.
     try {
       await File(outputPath).delete();
-    } catch (_) {
-      // Ignore ENOENT (file does not exist) and any other platform errors.
-    }
+    } catch (_) {}
+
     final database = ref.read(appDatabaseProvider);
-    final api = ref.read(apiProvider);
-    final normalizedPath = _normalizedOfflinePath(outputPath);
-    // BUG #6 fix: capture createdAt once so every progress callback reuses the
-    // same timestamp instead of generating a new one on each invocation.
     final trackCreatedAt = DateTime.now();
-    // BUG #10 fix: local cancellation flag — set to true if the controller is
-    // disposed while the download is in progress so the callback can exit early.
-    var isCancelled = false;
-    final cancelToken = CancelToken();
 
     await database.upsertOfflineTrack(
       OfflineTracksCompanion.insert(
@@ -264,8 +254,8 @@ class DownloadsController {
         artist: track.artist,
         album: Value(track.album),
         artworkUrl: Value(track.displayArtworkUrl),
-        filePath: normalizedPath,
-        status: 'downloading',
+        filePath: outputPath,
+        status: 'resolving',
         progress: const Value(0),
         createdAt: trackCreatedAt,
         updatedAt: DateTime.now(),
@@ -273,36 +263,50 @@ class DownloadsController {
     );
 
     try {
-      final resolved = await api.resolveTrack(track);
-      // BUG #4 fix: use the shared _dio instance instead of creating a new one
-      // per download. cancelToken lets us abort cleanly on dispose.
-      await _dio.download(
-        resolved.streamUrl,
-        normalizedPath,
-        cancelToken: cancelToken,
-        onReceiveProgress: (received, total) async {
-          // BUG #10 fix: stop if cancelled.
-          if (isCancelled || _disposed) return;
-          // BUG #5 fix: double-check disposed inside the async callback.
-          if (_disposed) {
-            isCancelled = true;
-            cancelToken.cancel('controller disposed');
-            return;
-          }
-          final progress = total <= 0 ? 0.0 : received / total;
+      final streamUrl = await _resolveStreamUrl(track);
+      if (_disposed) return;
+
+      await database.upsertOfflineTrack(
+        OfflineTracksCompanion.insert(
+          trackKey: track.trackKey,
+          title: track.title,
+          artist: track.artist,
+          album: Value(track.album),
+          artworkUrl: Value(track.displayArtworkUrl),
+          filePath: outputPath,
+          status: 'downloading',
+          progress: const Value(0),
+          createdAt: trackCreatedAt,
+          updatedAt: DateTime.now(),
+        ),
+      );
+
+      final filename = '${track.trackKey}.m4a';
+      final task = DownloadTask(
+        taskId: 'dl_${track.trackKey}',
+        url: streamUrl,
+        filename: filename,
+        directory: 'downloads',
+        baseDirectory: BaseDirectory.applicationDocuments,
+        updates: Updates.statusAndProgress,
+        retries: 0,
+        allowPause: true,
+      );
+
+      final result = await FileDownloader().download(
+        task,
+        onProgress: (progress) async {
+          if (_disposed) return;
           await database.upsertOfflineTrack(
             OfflineTracksCompanion.insert(
               trackKey: track.trackKey,
               title: track.title,
               artist: track.artist,
               album: Value(track.album),
-              artworkUrl: Value(
-                track.displayArtworkUrl ?? resolved.thumbnailUrl,
-              ),
-              filePath: normalizedPath,
-              status: progress >= 1 ? 'downloaded' : 'downloading',
-              progress: Value(progress),
-              // BUG #6 fix: reuse the pre-captured createdAt.
+              artworkUrl: Value(track.displayArtworkUrl),
+              filePath: outputPath,
+              status: 'downloading',
+              progress: Value(progress.clamp(0.0, 1.0)),
               createdAt: trackCreatedAt,
               updatedAt: DateTime.now(),
             ),
@@ -311,14 +315,19 @@ class DownloadsController {
       );
 
       if (_disposed) return;
+
+      if (result.status != TaskStatus.complete) {
+        throw Exception('Download ended with status: ${result.status}');
+      }
+
       await database.upsertOfflineTrack(
         OfflineTracksCompanion.insert(
           trackKey: track.trackKey,
           title: track.title,
           artist: track.artist,
           album: Value(track.album),
-          artworkUrl: Value(track.displayArtworkUrl ?? resolved.thumbnailUrl),
-          filePath: normalizedPath,
+          artworkUrl: Value(track.displayArtworkUrl),
+          filePath: outputPath,
           status: 'downloaded',
           progress: const Value(1),
           createdAt: trackCreatedAt,
@@ -328,10 +337,8 @@ class DownloadsController {
     } catch (_) {
       if (_disposed) return;
       try {
-        final partial = File(normalizedPath);
-        if (await partial.exists()) {
-          await partial.delete();
-        }
+        final partial = File(outputPath);
+        if (await partial.exists()) await partial.delete();
       } catch (_) {}
       if (_disposed) return;
       await database.upsertOfflineTrack(
@@ -341,7 +348,7 @@ class DownloadsController {
           artist: track.artist,
           album: Value(track.album),
           artworkUrl: Value(track.displayArtworkUrl),
-          filePath: normalizedPath,
+          filePath: outputPath,
           status: 'failed',
           progress: const Value(0),
           createdAt: trackCreatedAt,
@@ -364,20 +371,8 @@ class DownloadsController {
         return;
       }
       if (attempt < _downloadRetryCount) {
-        await Future<void>.delayed(Duration(seconds: attempt * 2));
+        await Future<void>.delayed(Duration(seconds: attempt * 3));
       }
     }
   }
-
-  String _normalizedOfflinePath(String filePath) {
-    if (filePath.endsWith('.audio')) {
-      return filePath.replaceFirst(RegExp(r'\.audio$'), '.m4a');
-    }
-    if (RegExp(r'\.[a-zA-Z0-9]+$').hasMatch(filePath)) {
-      return filePath;
-    }
-    return '$filePath.m4a';
-  }
 }
-
-// Downloads
