@@ -73,6 +73,7 @@ class LibraryState {
 
 const _libraryCacheKeyPrefix = 'jojomusic.library.cache';
 const _savedAlbumsKey = 'jojomusic.saved_albums';
+const _libraryFetchTimeout = Duration(seconds: 8);
 
 final libraryControllerProvider =
     AsyncNotifierProvider<LibraryController, LibraryState>(
@@ -93,12 +94,23 @@ class LibraryController extends AsyncNotifier<LibraryState> {
 
   @override
   Future<LibraryState> build() async {
-    // Listen to session changes so the library refreshes when convexUserId
-    // becomes available after _validateStoredSession completes asynchronously.
+    // Wait for the session to resolve before reading the cache.
+    // SessionController.build() has no network calls, so this completes on
+    // the next microtask — but without this await, _libraryCacheKey() gets
+    // called while the session is still AsyncLoading and falls back to the
+    // 'anon' key, causing a cache miss every time the app starts offline.
+    await ref
+        .read(sessionControllerProvider.future)
+        .timeout(const Duration(seconds: 1), onTimeout: () => null);
+
+    // Listen to session changes so the library refreshes when the session
+    // becomes available or changes (e.g. after background token validation).
+    // Use user.id rather than convexUserId so this fires even when Convex
+    // hasn't been resolved yet.
     ref.listen(sessionControllerProvider, (previous, next) {
-      final prevId = previous?.asData?.value?.convexUserId;
-      final nextId = next.asData?.value?.convexUserId;
-      if (nextId != null && nextId != prevId) {
+      final prevUserId = previous?.asData?.value?.user.id;
+      final nextUserId = next.asData?.value?.user.id;
+      if (nextUserId != null && nextUserId != prevUserId) {
         unawaited(_refreshInBackground());
       }
     });
@@ -336,28 +348,32 @@ class LibraryController extends AsyncNotifier<LibraryState> {
 
     if (convexId != null) {
       try {
-        // BUG #7 fix: use eagerError: false so that a failure in one request
-        // does not discard the results of the other two that already succeeded.
-        // Each future is individually wrapped with a fallback so a partial
-        // failure degrades gracefully instead of losing everything.
-        final results = await Future.wait(
-          [
-            _convex
-                .listSavedTracks(convexId)
-                .catchError((_) => <Track>[]),
-            _convex
-                .listPlaylists(convexId)
-                .catchError((_) => <Playlist>[]),
-            _convex
-                .listSavedPodcastShows(convexId)
-                .catchError((_) => <Podcast>[]),
-          ],
-          eagerError: false,
-        );
+        final results = await Future.wait([
+          _convex
+              .listSavedTracks(convexId)
+              .timeout(_libraryFetchTimeout)
+              .catchError((_) => <Track>[]),
+          _convex
+              .listPlaylists(convexId)
+              .timeout(_libraryFetchTimeout)
+              .catchError((_) => <Playlist>[]),
+          _convex
+              .listSavedPodcastShows(convexId)
+              .timeout(_libraryFetchTimeout)
+              .catchError((_) => <Podcast>[]),
+        ], eagerError: false);
+        final likes = results[0] as List<Track>;
+        final playlists = results[1] as List<Playlist>;
+        final podcasts = results[2] as List<Podcast>;
+        // If Convex returned nothing at all, the data hasn't been migrated yet.
+        // Fall back to the NestJS HTTP API which holds the source of truth.
+        if (likes.isEmpty && playlists.isEmpty && podcasts.isEmpty) {
+          return _fetchLibraryFromHttp(savedAlbums);
+        }
         return LibraryState(
-          likes: results[0] as List<Track>,
-          playlists: results[1] as List<Playlist>,
-          followedPodcasts: results[2] as List<Podcast>,
+          likes: likes,
+          playlists: playlists,
+          followedPodcasts: podcasts,
           savedAlbums: savedAlbums,
         );
       } catch (_) {
@@ -365,7 +381,6 @@ class LibraryController extends AsyncNotifier<LibraryState> {
       }
     }
 
-    // Fallback NestJS si pas de Convex user
     return _fetchLibraryFromHttp(savedAlbums);
   }
 
@@ -373,14 +388,20 @@ class LibraryController extends AsyncNotifier<LibraryState> {
     final api = ref.read(apiProvider);
     // BUG #7 fix: same defensive pattern as the Convex path — individual
     // failures degrade gracefully instead of discarding all fetched data.
-    final results = await Future.wait(
-      [
-        api.fetchLikes().catchError((_) => <Track>[]),
-        api.fetchPlaylists().catchError((_) => <Playlist>[]),
-        api.fetchFollowedPodcasts().catchError((_) => <Podcast>[]),
-      ],
-      eagerError: false,
-    );
+    final results = await Future.wait([
+      api
+          .fetchLikes()
+          .timeout(_libraryFetchTimeout)
+          .catchError((_) => <Track>[]),
+      api
+          .fetchPlaylists()
+          .timeout(_libraryFetchTimeout)
+          .catchError((_) => <Playlist>[]),
+      api
+          .fetchFollowedPodcasts()
+          .timeout(_libraryFetchTimeout)
+          .catchError((_) => <Podcast>[]),
+    ], eagerError: false);
     return LibraryState(
       likes: results[0] as List<Track>,
       playlists: results[1] as List<Playlist>,
@@ -515,12 +536,36 @@ class LibraryController extends AsyncNotifier<LibraryState> {
   Future<void> _refreshInBackground() async {
     try {
       final next = await _fetchLibrary();
+      // Guard: _fetchLibraryFromHttp() uses catchError on every call, so when
+      // offline all three return [] without throwing. Don't overwrite populated
+      // cached state with that empty result — it would wipe the library display.
+      final current = state.asData?.value;
+      final fetchedIsEmpty =
+          next.likes.isEmpty &&
+          next.playlists.isEmpty &&
+          next.followedPodcasts.isEmpty;
+      final cacheHasData =
+          current != null &&
+          (current.likes.isNotEmpty ||
+              current.playlists.isNotEmpty ||
+              current.followedPodcasts.isNotEmpty);
+      if (fetchedIsEmpty && cacheHasData) return;
+
       await _persistLibrary(next);
       _scheduleOfflineSync(next.playlists, next.likes);
       if (!ref.mounted) return;
       state = AsyncData(next);
-    } catch (_) {
       return;
+    } catch (_) {}
+
+    // Network failed. Try the cache with the now-resolved session key.
+    // This covers the race where session loads after the initial build()
+    // ran with the 'anon' cache key and found nothing.
+    if (!ref.mounted) return;
+    if (state is AsyncData) return; // already showing data, don't overwrite
+    final cached = await _restoreCachedLibrary();
+    if (cached != null && ref.mounted) {
+      state = AsyncData(cached);
     }
   }
 
